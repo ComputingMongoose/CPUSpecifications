@@ -1,0 +1,3211 @@
+package jss.devices.cpu.impl;
+
+import jss.configuration.ConfigurationValueOptionException;
+import jss.configuration.ConfigurationValueTypeException;
+import jss.configuration.DeviceConfiguration;
+import jss.configuration.DeviceConfigurationException;
+import jss.devices.GenericControlDevice;
+import jss.devices.GenericDataAccessDevice;
+import jss.devices.bus.ControlBus;
+import jss.devices.bus.ControlBusUnknownSignalException;
+import jss.devices.bus.DataBus;
+import jss.devices.cpu.CPUDevice;
+import jss.devices.cpu.CPUInvalidOpcodeException;
+import jss.devices.memory.MemoryAccessException;
+import jss.simulation.Simulation;
+import jss.devices.cpu.CPUState;
+import jss.devices.cpu.AbstractCPUDevice;
+
+public class Intel8088 extends AbstractCPUDevice {
+
+    int AX,BX,CX,DX,SP,BP,SI,DI,ES,CS,SS,DS,IP;
+    int flags;
+    int []parity_map;
+    boolean flag_halt;
+    int opcodeByte1;
+    int opcodeByte2;
+          
+	CPUState cpuState=new CPUState();
+	
+	public CPUState getCPUState() {
+		cpuState.setRegister("AX", 16 , AX);
+		cpuState.setRegister("BX", 16 , BX);
+		cpuState.setRegister("CX", 16 , CX);
+		cpuState.setRegister("DX", 16 , DX);
+		cpuState.setRegister("SP", 16 , SP);
+		cpuState.setRegister("BP", 16 , BP);
+		cpuState.setRegister("SI", 16 , SI);
+		cpuState.setRegister("DI", 16 , DI);
+		cpuState.setRegister("ES", 16 , ES);
+		cpuState.setRegister("CS", 16 , CS);
+		cpuState.setRegister("SS", 16 , SS);
+		cpuState.setRegister("DS", 16 , DS);
+		cpuState.setRegister("IP", 16 , IP);
+		cpuState.setRegister("FLAGS", 16 , flags);
+		return cpuState;
+	}
+          
+          @Override
+          public void configure(DeviceConfiguration config, Simulation sim)
+			throws DeviceConfigurationException, ConfigurationValueTypeException {
+
+                super.configure(config,sim);
+                
+                    parity_map=new int[256];
+		for(int i=0;i<256;i++) {
+			parity_map[i]=
+				((   (i&0x1)+
+					((i>>1)&0x1)+
+					((i>>2)&0x1)+
+					((i>>3)&0x1)+
+					((i>>4)&0x1)+
+					((i>>5)&0x1)+
+					((i>>6)&0x1)+
+					((i>>7)&0x1)
+				)&0x1)^0x1;
+					
+		}
+          }
+
+          @Override
+          public void initialize()
+			throws DeviceConfigurationException, ConfigurationValueTypeException, ConfigurationValueOptionException {
+                super.initialize();
+                
+                    flags=0x0002;
+                    AX=0;
+                    BX=0;
+                    CX=0;
+                    DX=0;
+                    SP=0;
+                    BP=0;
+                    SI=0;
+                    DI=0;
+                    ES=0;
+                    CS=0xFFFF;
+                    SS=0;
+                    DS=0;
+                    IP=0;
+                    flag_halt=false;
+          }
+
+	@Override
+	public long getCurrentAddress() {
+		return #ENSURE_20( (CS<<4)+(IP) ); 
+	}
+          
+	public boolean isFlag_halt() {
+		return flag_halt;
+	}
+
+	public int getInstr() {
+		return opcodeByte1;
+	}
+          
+
+
+#define READ_NEXT() #{ ((int)memoryBus.read(#ENSURE_20( (CS<<4)+(IP) ))); IP=#ENSURE_16(IP+1); #}
+#define READ_OPCODE_2() #{ opcodeByte2=#READ_NEXT(); #}
+
+#define READ_NEXT_8(x) #{ x = #READ_NEXT(); #}
+#define READ_NEXT_16(x) #{ tmp_read = #READ_NEXT(); x = #READ_NEXT(); x=((x)<<8)|(tmp_read); #}
+
+#define CHECK_MIN_INT_8(x) #{ ((x==0x80)?(1):(0)) #}
+#define CHECK_MIN_INT_16(x) #{ ((x==0x8000)?(1):(0)) #}
+
+#define SET_AX(v) #{ AX=(int)(v); #}
+#define SET_BX(v) #{ BX=(int)(v); #}
+#define SET_CX(v) #{ CX=(int)(v); #}
+#define SET_DX(v) #{ DX=(int)(v); #}
+#define SET_SP(v) #{ SP=(int)(v); #}
+#define SET_BP(v) #{ BP=(int)(v); #}
+#define SET_SI(v) #{ SI=(int)(v); #}
+#define SET_DI(v) #{ DI=(int)(v); #}
+#define SET_ES(v) #{ ES=(int)(v); #}
+#define SET_CS(v) #{ CS=(int)(v); #}
+#define SET_SS(v) #{ SS=(int)(v); #}
+#define SET_DS(v) #{ DS=(int)(v); #}
+#define SET_IP(v) #{ IP=(int)(v); #}
+
+#define GET_AX() #{ AX #}
+#define GET_BX() #{ BX #}
+#define GET_CX() #{ CX #}
+#define GET_DX() #{ DX #}
+#define GET_SP() #{ SP #}
+#define GET_BP() #{ BP #}
+#define GET_SI() #{ SI #}
+#define GET_DI() #{ DI #}
+#define GET_ES() #{ ES #}
+#define GET_CS() #{ CS #}
+#define GET_SS() #{ SS #}
+#define GET_DS() #{ DS #}
+#define GET_IP() #{ IP #}
+
+#define SET_AL(v) #{ AX=(AX&0xFF00)|((int)(v)); #}
+#define SET_AH(v) #{ AX=(AX&0x00FF)|(((int)(v))<<8); #}
+#define SET_BL(v) #{ BX=(BX&0xFF00)|((int)(v)); #}
+#define SET_BH(v) #{ BX=(BX&0x00FF)|(((int)(v))<<8); #}
+#define SET_CL(v) #{ CX=(CX&0xFF00)|((int)(v)); #}
+#define SET_CH(v) #{ CX=(CX&0x00FF)|(((int)(v))<<8); #}
+#define SET_DL(v) #{ DX=(DX&0xFF00)|((int)(v)); #}
+#define SET_DH(v) #{ DX=(DX&0x00FF)|(((int)(v))<<8); #}
+
+#define GET_AL() #{ (AX & 0xFF) #}
+#define GET_AH() #{ (AX>>8) #}
+#define GET_BL() #{ (BX&0xFF) #}
+#define GET_BH() #{ (BX>>8) #}
+#define GET_CL() #{ (CX&0xFF) #}
+#define GET_CH() #{ (CX>>8) #}
+#define GET_DL() #{ (DX&0xFF) #}
+#define GET_DH() #{ (DX>>8) #}
+
+#define DEC_SP() #{ SP-=2; SP&=0xFFFF; #}
+#define INC_SP() #{ SP+=2; SP&=0xFFFF; #}
+
+#define STORE_8(a,v) #{ memoryBus.write(#ENSURE_20( (seg<<4)+(a) ),v); #}
+#define LOAD_8(a) #{ (int)memoryBus.read(#ENSURE_20( (seg<<4)+(a) )) #}
+
+#define STORE_16(a,v) #{ memoryBus.write(#ENSURE_20((seg<<4)+(a)),(v)&0xFF); memoryBus.write(#ENSURE_20((seg<<4)+(a)+1),(v)>>8); #}
+#define LOAD_16(a) #{ ((int)memoryBus.read(#ENSURE_20((seg<<4)+(a))) | (((int)memoryBus.read(#ENSURE_20((seg<<4)+(a)+1))<<8))) #}
+
+#define STORE_SEG_8(s,a,v) #{ memoryBus.write(#ENSURE_20(((s)<<4)+(a)),v); #}
+#define LOAD_SEG_8(s,a) #{ (int)memoryBus.read(#ENSURE_20(((s)<<4)+(a))) #}
+
+#define STORE_SEG_16(s,a,v) #{ memoryBus.write(#ENSURE_20(((s)<<4)+(a)),(v)&0xFF); memoryBus.write(#ENSURE_20(((s)<<4)+(a)+1),(v)>>8); #}
+#define LOAD_SEG_16(s,a) #{ ((int)memoryBus.read(#ENSURE_20(((s)<<4)+(a))) | (((int)memoryBus.read(#ENSURE_20(((s)<<4)+(a)+1))<<8))) #}
+
+
+// Flags = ----|O|D|I|T|S|Z|-|A|-|P|-|C
+// O = Overflow
+// D = Direction for string operations
+// I = Interrupt enable
+// T = Trap
+// S,Z,A,P,C = similar to 8080
+#define GET_FLAGS() #{ flags #}
+#define SET_FLAGS(v) #{ flags=v; #}
+
+#define GET_FLAG_NZ() #{ ((flags&0x40)==0) #}
+#define GET_FLAG_Z() #{ ((flags&0x40)==0x40) #}
+#define SET_FLAG_Z(v) #{ flags=(flags&0xFFBF)|(((int)(v))<<6); #}
+
+#define GET_FLAG_NC() #{ ((flags&0x1)==0) #}
+#define GET_FLAG_C() #{ ((flags&0x1)==0x1) #}
+#define SET_FLAG_C(v) #{ flags=(flags&0xFFFE)|((int)(v)); #}
+
+#define GET_FLAG_PO() #{ ((flags&0x4)==0) #}
+#define GET_FLAG_PE() #{ ((flags&0x4)==0x4) #}
+#define SET_FLAG_PAR(v) #{ flags=(flags&0xFFFB)|(((int)(v))<<2); #}
+
+#define GET_FLAG_P() #{ ((flags&0x80)==0) #}
+#define GET_FLAG_M() #{ ((flags&0x80)==0x80) #}
+#define SET_FLAG_S(v) #{ flags=(flags&0xFF7F)|(((int)(v))<<7); #}
+
+#define GET_FLAG_AC() #{ ((flags&0x10)==0x10) #}
+#define SET_FLAG_AC(v) #{ flags=(flags&0xFFEF)|(((int)(v))<<4); #}
+
+#define GET_FLAG_T() #{ ((flags&0x0100)==0x0100) #}
+#define SET_FLAG_T(v) #{ flags=(flags&0xFEFF)|(((int)(v))<<8); #}
+
+#define GET_FLAG_I() #{ ((flags&0x0200)==0x0200) #}
+#define SET_FLAG_I(v) #{ flags=(flags&0xFDFF)|(((int)(v))<<9); #}
+
+#define GET_FLAG_D() #{ ((flags&0x0400)==0x0400) #}
+#define SET_FLAG_D(v) #{ flags=(flags&0xFBFF)|(((int)(v))<<10); #}
+
+#define GET_FLAG_O() #{ ((flags&0x0800)==0x0800) #}
+#define SET_FLAG_O(v) #{ flags=(flags&0xF7FF)|(((int)(v))<<11); #}
+
+
+#define SET_ALU_FLAGS_MAIN_8(new) #{ #SET_FLAG_Z(((new&0xFF)==0)?(1):(0)); #SET_FLAG_PAR(parity_map[(int)new&0xFF]); #SET_FLAG_S( ((new&0x80)==0x80)?(1):(0) ); #}
+#define SET_ALU_FLAGS_CARRY_8(new) #{ #SET_FLAG_C( ((new&0xF00)!=0)?(1):(0)); #}
+#define SET_ALU_FLAGS_O_8(a,b,c,f) #{ #SET_FLAG_O( ((a&0x80)==(b&0x80) && (a&0x80)!=(c&0x80))?(1):(f)); #}
+
+// for parity only low byte is analyzed...  ^ parity_map[(int)(new>>8)&0xFF])
+#define SET_ALU_FLAGS_MAIN_16(new) #{ #SET_FLAG_Z(((new&0xFFFF)==0)?(1):(0)); #SET_FLAG_PAR(parity_map[(int)new&0xFF]); #SET_FLAG_S( ((new&0x8000)==0x8000)?(1):(0) ); #}
+#define SET_ALU_FLAGS_CARRY_16(new) #{ #SET_FLAG_C( ((new&0xF0000)!=0)?(1):(0)); #}
+#define SET_ALU_FLAGS_O_16(a,b,c,f) #{ #SET_FLAG_O( ((a&0x8000)==(b&0x8000) && (a&0x8000)!=(c&0x8000))?(1):(f)); #}
+
+#define MODM_00_RM_000() #{ addr=((#GET_BX()+#GET_SI())) & 0xFFFF; #}
+#define MODM_00_RM_001() #{ addr=((#GET_BX()+#GET_DI())) & 0xFFFF; #}
+#define MODM_00_RM_010() #{ addr=((#GET_BP()+#GET_SI())) & 0xFFFF; #}
+#define MODM_00_RM_011() #{ addr=((#GET_BP()+#GET_DI())) & 0xFFFF; #}
+#define MODM_00_RM_100() #{ addr=((#GET_SI())) & 0xFFFF; #}
+#define MODM_00_RM_101() #{ addr=((#GET_DI())) & 0xFFFF; #}
+#define MODM_00_RM_110() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); addr=(tmp2<<8)|tmp1; #}
+#define MODM_00_RM_111() #{ addr=((#GET_BX())) & 0xFFFF; #}
+
+#define MODM_01_RM_000() #{ tmp1=#READ_NEXT(); addr=((#GET_BX()+#GET_SI())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+#define MODM_01_RM_001() #{ tmp1=#READ_NEXT(); addr=((#GET_BX()+#GET_DI())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+#define MODM_01_RM_010() #{ tmp1=#READ_NEXT(); addr=((#GET_BP()+#GET_SI())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+#define MODM_01_RM_011() #{ tmp1=#READ_NEXT(); addr=((#GET_BP()+#GET_DI())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+#define MODM_01_RM_100() #{ tmp1=#READ_NEXT(); addr=((#GET_SI())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+#define MODM_01_RM_101() #{ tmp1=#READ_NEXT(); addr=((#GET_DI())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+#define MODM_01_RM_110() #{ tmp1=#READ_NEXT(); addr=((#GET_BP())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+#define MODM_01_RM_111() #{ tmp1=#READ_NEXT(); addr=((#GET_BX())+(((tmp1&0x80)!=0)?(tmp1-0x100):(tmp1))) & 0xFFFF; #}
+
+#define MODM_10_RM_000() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_BX()+#GET_SI())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+#define MODM_10_RM_001() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_BX()+#GET_DI())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+#define MODM_10_RM_010() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_BP()+#GET_SI())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+#define MODM_10_RM_011() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_BP()+#GET_DI())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+#define MODM_10_RM_100() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_SI())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+#define MODM_10_RM_101() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_DI())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+#define MODM_10_RM_110() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_BP())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+#define MODM_10_RM_111() #{ tmp1=#READ_NEXT(); tmp2=#READ_NEXT(); tmp1=(tmp2<<8)|tmp1; addr=((#GET_BX())+(((tmp1&0x8000)!=0)?(tmp1-0x10000):(tmp1))) & 0xFFFF; #}
+
+
+#define GET_REG_000_W_8() #{ #GET_AL() #}
+#define GET_REG_001_W_8() #{ #GET_CL() #}
+#define GET_REG_010_W_8() #{ #GET_DL() #}
+#define GET_REG_011_W_8() #{ #GET_BL() #}
+#define GET_REG_100_W_8() #{ #GET_AH() #}
+#define GET_REG_101_W_8() #{ #GET_CH() #}
+#define GET_REG_110_W_8() #{ #GET_DH() #}
+#define GET_REG_111_W_8() #{ #GET_BH() #}
+
+#define GET_REG_000_W_16() #{ #GET_AX() #}
+#define GET_REG_001_W_16() #{ #GET_CX() #}
+#define GET_REG_010_W_16() #{ #GET_DX() #}
+#define GET_REG_011_W_16() #{ #GET_BX() #}
+#define GET_REG_100_W_16() #{ #GET_SP() #}
+#define GET_REG_101_W_16() #{ #GET_BP() #}
+#define GET_REG_110_W_16() #{ #GET_SI() #}
+#define GET_REG_111_W_16() #{ #GET_DI() #}
+
+#define SET_REG_000_W_8(v) #{ #SET_AL(v) #}
+#define SET_REG_001_W_8(v) #{ #SET_CL(v) #}
+#define SET_REG_010_W_8(v) #{ #SET_DL(v) #}
+#define SET_REG_011_W_8(v) #{ #SET_BL(v) #}
+#define SET_REG_100_W_8(v) #{ #SET_AH(v) #}
+#define SET_REG_101_W_8(v) #{ #SET_CH(v) #}
+#define SET_REG_110_W_8(v) #{ #SET_DH(v) #}
+#define SET_REG_111_W_8(v) #{ #SET_BH(v) #}
+
+#define SET_REG_000_W_16(v) #{ #SET_AX(v) #}
+#define SET_REG_001_W_16(v) #{ #SET_CX(v) #}
+#define SET_REG_010_W_16(v) #{ #SET_DX(v) #}
+#define SET_REG_011_W_16(v) #{ #SET_BX(v) #}
+#define SET_REG_100_W_16(v) #{ #SET_SP(v) #}
+#define SET_REG_101_W_16(v) #{ #SET_BP(v) #}
+#define SET_REG_110_W_16(v) #{ #SET_SI(v) #}
+#define SET_REG_111_W_16(v) #{ #SET_DI(v) #}
+
+#define GET_SEG_00() #{ #GET_ES() #}
+#define GET_SEG_01() #{ #GET_CS() #}
+#define GET_SEG_10() #{ #GET_SS() #}
+#define GET_SEG_11() #{ #GET_DS() #}
+
+#define SET_SEG_00(v) #{ #SET_ES(v) #}
+#define SET_SEG_01(v) #{ #SET_CS(v) #}
+#define SET_SEG_10(v) #{ #SET_SS(v) #}
+#define SET_SEG_11(v) #{ #SET_DS(v) #}
+
+#define ENSURE_8(v) #{ ((v)&0xFF) #}
+#define ENSURE_16(v) #{ ((v)&0xFFFF) #}
+#define ENSURE_20(v) #{ ((v)&0xFFFFF) #}
+
+#define XOR_NEG_8() #{ 0xFF #}
+#define XOR_NEG_16() #{ 0xFFFF #}
+#define XOR_NEG_32() #{ 0xFFFFFFFFL #}
+
+#define INT(x) #{ #DEC_SP(); #STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_FLAGS()); #SET_FLAG_I(0); #SET_FLAG_T(0); #DEC_SP(); #STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_CS()); #DEC_SP(); #STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_IP()); #SET_IP(#LOAD_SEG_16(0,4*x)); #SET_CS(#LOAD_SEG_16(0,4*x+2)); #}
+
+MAP SEG
+00 ES
+01 CS
+10 SS
+11 DS
+END
+
+MAP REG8
+000 AL
+001 CL
+010 DL
+011 BL
+100 AH
+101 CH
+110 DH
+111 BH
+END
+
+MAP REG16
+000 AX
+001 CX
+010 DX
+011 BX
+100 SP
+101 BP
+110 SI
+111 DI
+END
+
+MAP MODM
+00 00
+01 01
+10 10
+END
+
+MAP MODR
+11 11
+END
+
+MAP RM
+000 000
+001 001
+010 010
+011 011
+100 100
+101 101
+110 110
+111 111
+END
+
+MAP REG
+000 000
+001 001
+010 010
+011 011
+100 100
+101 101
+110 110
+111 111
+END
+
+MAP W
+0 8
+1 16
+END
+
+MAP S
+0 0
+1 1
+END
+
+MAP V
+0 0
+1 1
+END
+
+MAP XXX
+000 000
+001 001
+010 010
+011 011
+100 100
+101 101
+110 110
+111 111
+END
+
+MAP YYY
+000 000
+001 001
+010 010
+011 011
+100 100
+101 101
+110 110
+111 111
+END
+
+    long tmp1=0,tmp2=0,tmp3=0,tmp4=0,tmp5=0,tmp6=0,tmp_read=0;
+    int stringRepType=0; // 0=once (no prefix) / 0xF2=REP, 0xF3=REPZ
+    long addr=0;
+    int seg;
+
+    public int getRegister(String name){
+        switch(name.toUpperCase()){
+            // 16-BIT
+            case "AX":return #GET_AX();
+            case "BX":return #GET_BX();
+            case "CX":return #GET_CX();
+            case "DX":return #GET_DX();
+            case "SP":return #GET_SP();
+            case "BP":return #GET_BP();
+            case "SI":return #GET_SI();
+            case "DI":return #GET_DI();
+            
+            // SEGMENTS
+            case "ES":return #GET_ES();
+            case "CS":return #GET_CS();
+            case "DS":return #GET_DS();
+            case "SS":return #GET_SS();
+            
+            // 8-BIT
+            case "AH":return #GET_AH();
+            case "AL":return #GET_AL();
+            case "BH":return #GET_BH();
+            case "BL":return #GET_BL();
+            case "CH":return #GET_CH();
+            case "CL":return #GET_CL();
+            case "DH":return #GET_DH();
+            case "DL":return #GET_DL();
+            
+            // Others
+            case "IP":return #GET_IP();
+            case "FLAGS":return #GET_FLAGS();
+            
+            default:
+                System.out.println("Unknown register ["+name+"]");
+                return 0;
+        }
+    }
+
+    public void setRegister(String name, int v){
+        switch(name.toUpperCase()){
+            // 16-BIT
+            case "AX": #SET_AX(v); break;
+            case "BX": #SET_BX(v); break;
+            case "CX": #SET_CX(v); break;
+            case "DX": #SET_DX(v); break;
+            case "SP": #SET_SP(v); break;
+            case "BP": #SET_BP(v); break;
+            case "SI": #SET_SI(v); break;
+            case "DI": #SET_DI(v); break;
+            
+            // SEGMENTS
+            case "ES": #SET_ES(v); break;
+            case "CS": #SET_CS(v); break;
+            case "DS": #SET_DS(v); break;
+            case "SS": #SET_SS(v); break;
+            
+            // 8-BIT
+            case "AH": #SET_AH(v); break;
+            case "AL": #SET_AL(v); break;
+            case "BH": #SET_BH(v); break;
+            case "BL": #SET_BL(v); break;
+            case "CH": #SET_CH(v); break;
+            case "CL": #SET_CL(v); break;
+            case "DH": #SET_DH(v); break;
+            case "DL": #SET_DL(v); break;
+            
+            // Others
+            case "IP": #SET_IP(v); break;
+            case "FLAGS": #SET_FLAGS(v); break;
+            
+            default:
+                System.out.println("Unknown register ["+name+"]");
+                break;
+        }
+    }
+
+	@Override
+	public void stepImpl() throws MemoryAccessException, ControlBusUnknownSignalException, CPUInvalidOpcodeException {
+                    
+            if(controlBus.isSignalSet("INT")) {
+                int int_type=2; // assume NMI
+                byte[] idata=controlBus.getSignalData("INT");
+                if(idata.length>0)int_type=idata[0];
+                
+                controlBus.clearSignal("INT");
+                
+                if(#GET_FLAG_I() || int_type==2){ // NMI=2
+                    #INT(int_type);
+                    flag_halt=false;
+                }
+            }
+
+      		if(flag_halt) {
+      			return ;
+      		}
+
+                    stringRepType=0; 
+
+                    opcodeByte1=#READ_NEXT();
+
+                    seg=DS;
+                    
+                    // check for prefixes                    
+                    while(true){
+                        if((opcodeByte1 & 0xE7) == 0x26){ // segment prefix
+                            switch(opcodeByte1&0x18){
+                            case 0: seg=ES; break;
+                            case 8: seg=CS; break;
+                            case 0x10: seg=SS; break;
+                            case 0x18: seg=DS; break; 
+                            }
+                            opcodeByte1=#READ_NEXT();
+                        }else if(opcodeByte1==0xF2 || opcodeByte1==0xF3){ // REP
+                            stringRepType=opcodeByte1;
+                            opcodeByte1=#READ_NEXT();
+                        }else if(opcodeByte1==0xF0){ // LOCK
+                            opcodeByte1=#READ_NEXT();
+                        }else break;
+                    }
+
+:MOV RM D=0, MOD=memory
+100010|0|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+#STORE_$W$(addr,#GET_REG_$REG$_W_$W$())
+
+:MOV RM D=0, MOD=reg
+100010|0|W MODR|REG|RM
+#SET_REG_$RM$_W_$W$(#GET_REG_$REG$_W_$W$())
+
+:MOV RM D=1, MOD=memory
+100010|1|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+#SET_REG_$REG$_W_$W$(#LOAD_$W$(addr))
+
+:MOV RM D=1, MOD=reg
+100010|1|W MODR|REG|RM
+#SET_REG_$REG$_W_$W$(#GET_REG_$RM$_W_$W$())
+
+:MOV IMM,RM MOD=memory, W=0
+11000110 MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#READ_NEXT()
+#STORE_8(addr,tmp1)
+
+:MOV IMM,RM MOD=reg, W=0
+11000110 MODR|000|RM
+tmp1=#READ_NEXT()
+#SET_REG_$RM$_W_8(tmp1)
+
+:MOV IMM,RM MOD=memory, W=1
+11000111 MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#READ_NEXT()
+tmp2=#READ_NEXT()
+#STORE_8(addr,tmp1)
+#STORE_8(addr+1,tmp2)
+
+:MOV IMM,RM MOD=reg, W=1
+11000111 MODR|000|RM
+tmp1=#READ_NEXT()
+tmp2=#READ_NEXT()
+#SET_REG_$RM$_W_16((tmp2<<8)|tmp1)
+
+:MOV IMM,R MOD=reg, W=0
+1011|0|REG
+tmp1=#READ_NEXT()
+#SET_REG_$REG$_W_8(tmp1)
+
+:MOV IMM,R MOD=reg, W=0
+1011|1|REG
+tmp1=#READ_NEXT()
+tmp2=#READ_NEXT()
+#SET_REG_$REG$_W_16((tmp2<<8)|tmp1)
+
+:MOV AL,M
+10100000
+tmp1=#READ_NEXT()
+tmp2=#READ_NEXT()
+#SET_AL(#LOAD_8((tmp2<<8)|tmp1))
+
+:MOV AX,M
+10100001
+tmp1=#READ_NEXT()
+tmp2=#READ_NEXT()
+#SET_AX(#LOAD_16((tmp2<<8)|tmp1))
+
+:MOV M,AL
+10100010
+tmp1=#READ_NEXT()
+tmp2=#READ_NEXT()
+#STORE_8((tmp2<<8)|tmp1,#GET_AL())
+
+:MOV M,AX
+10100011
+tmp1=#READ_NEXT()
+tmp2=#READ_NEXT()
+#STORE_16((tmp2<<8)|tmp1,#GET_AX())
+
+:MOV REGSEG,RM MOD=memory
+10001110 MODM|0|SEG|RM
+#MODM_$MODM$_RM_$RM$()
+#SET_$SEG$(#LOAD_16(addr))
+
+:MOV REGSEG,RM MOD=reg
+10001110 MODR|0|SEG|RM
+#SET_$SEG$(#GET_REG_$RM$_W_16())
+
+:MOV RM,REGSEG MOD=memory
+10001100 MODM|0|SEG|RM
+#MODM_$MODM$_RM_$RM$()
+#STORE_16(addr,#GET_$SEG$())
+
+:MOV RM,REGSEG MOD=reg
+10001100 MODR|0|SEG|RM
+#SET_REG_$RM$_W_16(#GET_$SEG$())
+
+:PUSH RM MOD=memory
+11111111 MODM|110|RM
+#MODM_$MODM$_RM_$RM$()
+#DEC_SP()
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#LOAD_16(addr))
+
+:PUSH RM MOD=reg
+11111111 MODR|110|RM
+#DEC_SP()
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_REG_$RM$_W_16())
+
+:PUSH REG
+01010|REG16
+#DEC_SP()
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_$REG16$())
+
+:PUSH SEG
+000|SEG|110
+#DEC_SP()
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_$SEG$())
+
+:POP RM MOD=memory
+10001111 MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+#STORE_16(addr,#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+
+:POP RM MOD=reg
+10001111 MODR|000|RM
+#SET_REG_$RM$_W_16(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+
+:POP REG
+01011|REG16
+#SET_$REG16$(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+
+:POP SEG
+000|SEG|111
+#SET_$SEG$(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+
+:XCHG RM,R MOD=memory
+1000011|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+#STORE_$W$(addr,#GET_REG_$REG$_W_$W$())
+#SET_REG_$REG$_W_$W$(tmp1)
+
+:XCHG RM,R MOD=reg
+1000011|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+#SET_REG_$RM$_W_$W$(#GET_REG_$REG$_W_$W$())
+#SET_REG_$REG$_W_$W$(tmp1)
+
+:XCHG R,AX
+10010|REG16
+tmp1=#GET_$REG16$();
+#SET_$REG16$(#GET_AX())
+#SET_AX(tmp1)
+
+:IN PORT W=0
+11100100
+tmp1=#READ_NEXT();
+#SET_AL(((int)ioBus.read(tmp1)&0xFF));
+
+:IN PORT W=1
+11100101
+tmp1=#READ_NEXT();
+#SET_AX((int)ioBus.read(tmp1));
+
+:IN DX W=0
+11101100
+#SET_AL(((int)ioBus.read(#GET_DX())&0xFF));
+
+:IN DX W=1
+11101101
+#SET_AX((int)ioBus.read(#GET_DX()));
+
+:OUT PORT W=0
+11100110
+tmp1=#READ_NEXT();
+ioBus.write(tmp1,#GET_AL());
+
+:OUT PORT W=1
+11100111
+tmp1=#READ_NEXT();
+ioBus.write(tmp1,#GET_AX());
+
+:OUT DX W=0
+11101110
+ioBus.write(#GET_DX(),#GET_AL());
+
+:OUT DX W=1
+11101111
+ioBus.write(#GET_DX(),#GET_AX());
+
+:XLAT AL
+11010111
+#SET_AL( #LOAD_8( #GET_BX()+#GET_AL() ) )
+
+:LEA REG MOD=memory
+10001101 MODM|REG16|RM
+#MODM_$MODM$_RM_$RM$()
+#SET_$REG16$(addr)
+
+:LDS REG
+11000101 MODM|REG16|RM
+#MODM_$MODM$_RM_$RM$()
+#SET_$REG16$ ( #LOAD_16(addr) )
+#SET_DS ( #LOAD_16(addr+2) )
+
+:LES REG
+11000100 MODM|REG16|RM
+#MODM_$MODM$_RM_$RM$()
+#SET_$REG16$ ( #LOAD_16(addr) )
+#SET_ES ( #LOAD_16(addr+2) )
+
+:LAHF
+10011111
+#SET_AH(flags&0xFF)
+
+:SAHF
+10011110
+flags=(flags&0xFF00) | (#GET_AH());
+flags&=0x0FD5;flags|=0x0002;
+
+:PUSHF
+10011100
+#DEC_SP()
+#STORE_SEG_16(#GET_SS(),#GET_SP(),flags)
+
+:POPF
+10011101
+flags=#LOAD_SEG_16(#GET_SS(),#GET_SP());
+flags&=0x0FD5;flags|=0x0002;
+#INC_SP();
+
+:ADD RM D=0, MOD=memory
+0000000|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1+tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADD RM,R D=0, MOD=reg
+0000000|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADD RM D=1, MOD=memory
+0000001|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+tmp3=tmp1+tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADD RM D=1, MOD=reg
+0000001|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+tmp3=tmp1+tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADD RM,IMM MOD=memory, W=0
+100000|S|0 MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_8(addr);
+tmp2=#READ_NEXT();
+tmp3=tmp1+tmp2;
+#STORE_8(addr,  #ENSURE_8(tmp3) )
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,0)
+
+:ADD RM,IMM MOD=reg, W=0
+100000|S|0 MODR|000|RM
+tmp1=#GET_REG_$RM$_W_8();
+tmp2=#READ_NEXT();
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_8(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,0)
+
+:ADD RM,IMM MOD=memory, S=0, W=1
+100000|0|1 MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+tmp3=tmp1+tmp2;
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:ADD RM,IMM MOD=reg, S=0, W=1
+100000|0|1 MODR|000|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:ADD RM,IMM MOD=memory, S=1, W=1
+100000|1|1 MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+tmp3=tmp1+tmp2;
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:ADD RM,IMM MOD=reg, S=1, W=1
+100000|1|1 MODR|000|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+ 
+:ADD IMM,A W=0
+00000100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+tmp3=tmp1+tmp2;
+#SET_AL(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,0)
+
+:ADD IMM,A W=1
+00000101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+tmp3=tmp1+tmp2;
+#SET_AX(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+
+:ADC RM D=0, MOD=memory
+0001000|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADC RM,R D=0, MOD=reg
+0001000|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADC RM D=1, MOD=memory
+0001001|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADC RM D=1, MOD=reg
+0001001|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:ADC RM,IMM MOD=memory, W=0
+100000|S|0 MODM|010|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_8(addr);
+tmp2=#READ_NEXT();
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#STORE_8(addr,  #ENSURE_8(tmp3) )
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,0)
+
+:ADC RM,IMM MOD=reg, W=0
+100000|S|0 MODR|010|RM
+tmp1=#GET_REG_$RM$_W_8();
+tmp2=#READ_NEXT();
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_REG_$RM$_W_8(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,0)
+
+:ADC RM,IMM MOD=memory, S=0, W=1
+100000|0|1 MODM|010|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:ADC RM,IMM MOD=reg, S=0, W=1
+100000|0|1 MODR|010|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:ADC RM,IMM MOD=memory, S=1, W=1
+100000|1|1 MODM|010|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:ADC RM,IMM MOD=reg, S=1, W=1
+100000|1|1 MODR|010|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+ 
+:ADC IMM,A W=0
+00010100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_AL(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,0)
+
+:ADC IMM,A W=1
+00010101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+tmp3=tmp1+tmp2+((#GET_FLAG_C())?(1):(0));
+#SET_AX(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:INC RM MOD=memory
+1111111|W MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=1;
+tmp3=tmp1+tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:INC RM MOD=reg
+1111111|W MODR|000|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+
+:INC REG
+01000|REG16
+tmp1=#GET_$REG16$();
+tmp2=1;
+tmp3=tmp1+tmp2;
+#SET_$REG16$( #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_AC( ((tmp1&0x0F)+(tmp2&0x0F)>0x0F)?(1):(0) )
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+
+:AAA
+00110111
+if (((#GET_AL()) & 0x0F) >9 || (#GET_FLAG_AC()) ){
+          #SET_AL( #ENSURE_8(#GET_AL()+6) )
+          #SET_AH( #ENSURE_8(#GET_AH()+1) )
+          #SET_FLAG_AC(1)
+}
+#SET_FLAG_C( (#GET_FLAG_AC())?(1):(0) )
+#SET_AL( (#GET_AL())&0x0F )
+#SET_ALU_FLAGS_MAIN_8(#GET_AL())
+
+:DAA
+00100111
+if (((#GET_AL()) & 0x0F) >9 || (#GET_FLAG_AC()) ){
+          #SET_AL( #ENSURE_8(#GET_AL()+6) )
+          #SET_FLAG_AC(1)
+}
+if ((#GET_AL()) >0x9F || (#GET_FLAG_C()) ){
+          #SET_AL( #ENSURE_8(#GET_AL()+0x60) )
+          #SET_FLAG_C(1)
+}
+#SET_ALU_FLAGS_MAIN_8(#GET_AL())
+#SET_FLAG_Z(((#GET_AL())==0)?(1):(0)); 
+#SET_FLAG_PAR(parity_map[#GET_AL()]); 
+#SET_FLAG_S( ((#GET_AL()&0x80)==0x80)?(1):(0) );
+
+:SUB RM D=0, MOD=memory
+0010100|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM,R D=0, MOD=reg
+0010100|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM D=1, MOD=memory
+0010101|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM D=1, MOD=reg
+0010101|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM,IMM MOD=memory, W=0
+100000|S|0 MODM|101|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_8(addr);
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#STORE_8(addr,  #ENSURE_8(tmp3) )
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM,IMM MOD=reg, W=0
+100000|S|0 MODR|101|RM
+tmp1=#GET_REG_$RM$_W_8();
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_8(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM,IMM MOD=memory, S=0, W=1
+100000|0|1 MODM|101|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM,IMM MOD=reg, S=0, W=1
+100000|0|1 MODR|101|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM,IMM MOD=memory, S=1, W=1
+100000|1|1 MODM|101|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=((tmp2)^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB RM,IMM MOD=reg, S=1, W=1
+100000|1|1 MODR|101|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=((tmp2)^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+ 
+:SUB IMM,A W=0
+00101100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#SET_AL(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:SUB IMM,A W=1
+00101101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_AX(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+
+:SBB RM D=0, MOD=memory
+0001100|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)-((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+#SET_ALU_FLAGS_CARRY_$W$(tmp2)
+tmp2=#ENSURE_$W$(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_$W$(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM,R D=0, MOD=reg
+0001100|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)-((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+#SET_ALU_FLAGS_CARRY_$W$(tmp2)
+tmp2=#ENSURE_$W$(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_$W$(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM D=1, MOD=memory
+0001101|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)-((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+#SET_ALU_FLAGS_CARRY_$W$(tmp2)
+tmp2=#ENSURE_$W$(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_$W$(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM D=1, MOD=reg
+0001101|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)-((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+#SET_ALU_FLAGS_CARRY_$W$(tmp2)
+tmp2=#ENSURE_$W$(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_$W$(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM,IMM MOD=memory, W=0
+100000|S|0 MODM|011|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_8(addr);
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)-((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_8(tmp2);
+#SET_ALU_FLAGS_CARRY_8(tmp2)
+tmp2=#ENSURE_8(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#STORE_8(addr,  #ENSURE_8(tmp3) )
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_8(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM,IMM MOD=reg, W=0
+100000|S|0 MODR|011|RM
+tmp1=#GET_REG_$RM$_W_8();
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)-((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_8(tmp2);
+#SET_ALU_FLAGS_CARRY_8(tmp2)
+tmp2=#ENSURE_8(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_8(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_8(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM,IMM MOD=memory, S=0, W=1
+100000|0|1 MODM|011|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_16(tmp2);
+#SET_ALU_FLAGS_CARRY_16(tmp2)
+tmp2=#ENSURE_16(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_16(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM,IMM MOD=reg, S=0, W=1
+100000|0|1 MODR|011|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_16(tmp2);
+#SET_ALU_FLAGS_CARRY_16(tmp2)
+tmp2=#ENSURE_16(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_16(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM,IMM MOD=memory, S=1, W=1
+100000|1|1 MODM|011|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_16(tmp2);
+#SET_ALU_FLAGS_CARRY_16(tmp2)
+tmp2=#ENSURE_16(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=((tmp2)^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#STORE_16(addr,  #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_16(tmp3)
+    flags=flags^1;
+}
+
+:SBB RM,IMM MOD=reg, S=1, W=1
+100000|1|1 MODR|011|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_16(tmp2);
+#SET_ALU_FLAGS_CARRY_16(tmp2)
+tmp2=#ENSURE_16(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=((tmp2)^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_16(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_16(tmp3)
+    flags=flags^1;
+}
+
+:SBB IMM,A W=0
+00011100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_8(tmp2);
+#SET_ALU_FLAGS_CARRY_8(tmp2)
+tmp2=#ENSURE_8(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#SET_AL(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_8(tmp3)
+    flags=flags^1;
+}
+
+:SBB IMM,A W=1
+00011101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+#SET_FLAG_AC( ((tmp1&0x0F)-(tmp2&0x0F)+((#GET_FLAG_C())?(1):(0))<0)?(1):(0) )
+tmp2+=((#GET_FLAG_C())?(1):(0));
+tmp5=#CHECK_MIN_INT_16(tmp2);
+#SET_ALU_FLAGS_CARRY_16(tmp2)
+tmp2=#ENSURE_16(tmp2);
+if(tmp5==0)tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_AX(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+if(#GET_FLAG_NC()){
+    #SET_ALU_FLAGS_CARRY_16(tmp3)
+    flags=flags^1;
+}
+
+:DEC RM MOD=memory
+1111111|W MODM|001|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2= #XOR_NEG_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)-(1)<0)?(1):(0) )
+tmp3=tmp1+tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+flags=flags^1;
+
+:DEC RM MOD=reg
+1111111|W MODR|001|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#XOR_NEG_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)-(1)<0)?(1):(0) )
+tmp3=tmp1+tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,0)
+flags=flags^1;
+
+:DEC REG
+01001|REG16
+tmp1=#GET_$REG16$();
+tmp2=#XOR_NEG_16();
+#SET_FLAG_AC( ((tmp1&0x0F)-(1)<0)?(1):(0) )
+tmp3=tmp1+tmp2;
+#SET_$REG16$( #ENSURE_16(tmp3) )
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,0)
+flags=flags^1;
+
+:NEG RM MOD=memory
+1111011|W MODM|011|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=0;
+tmp2=#LOAD_$W$(addr);
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:NEG RM MOD=reg
+1111011|W MODR|011|RM
+tmp1=0;
+tmp2=#GET_REG_$RM$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM D=0, MOD=memory
+0011100|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM,R D=0, MOD=reg
+0011100|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM D=1, MOD=memory
+0011101|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM D=1, MOD=reg
+0011101|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_$W$(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_$W$())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_ALU_FLAGS_CARRY_$W$(tmp3)
+#SET_ALU_FLAGS_O_$W$(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM,IMM MOD=memory, W=0
+100000|S|0 MODM|111|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_8(addr);
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM,IMM MOD=reg, W=0
+100000|S|0 MODR|111|RM
+tmp1=#GET_REG_$RM$_W_8();
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM,IMM MOD=memory, S=0, W=1
+100000|0|1 MODM|111|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM,IMM MOD=reg, S=0, W=1
+100000|0|1 MODR|111|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp2=(tmp3<<8)|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM,IMM MOD=memory, S=1, W=1
+100000|1|1 MODM|111|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_16(addr);
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=((tmp2)^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP RM,IMM MOD=reg, S=1, W=1
+100000|1|1 MODR|111|RM
+tmp1=#GET_REG_$RM$_W_16();
+tmp2=#READ_NEXT();
+if((tmp2&0x80)==0x80)tmp2=0xFF00|tmp2;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=((tmp2)^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+ 
+:CMP IMM,A W=0
+00111100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_8(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_8())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_ALU_FLAGS_CARRY_8(tmp3)
+#SET_ALU_FLAGS_O_8(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:CMP IMM,A W=1
+00111101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+#SET_FLAG_AC( ((tmp1&0x0F)<(tmp2&0x0F))?(1):(0) )
+tmp5=#CHECK_MIN_INT_16(tmp2);
+tmp2=(tmp2 ^ #XOR_NEG_16())+1;
+tmp3=tmp1+tmp2;
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_ALU_FLAGS_CARRY_16(tmp3)
+#SET_ALU_FLAGS_O_16(tmp1,tmp2,tmp3,tmp5)
+flags=flags^1;
+
+:AAS
+00111111
+if (((#GET_AL()) & 0x0F) >9 || (#GET_FLAG_AC()) ){
+          #SET_AL( #ENSURE_8(#GET_AL()-6) )
+          #SET_AH( #ENSURE_8(#GET_AH()-1) )
+          #SET_FLAG_AC(1)
+}
+#SET_ALU_FLAGS_MAIN_8(#GET_AX())
+#SET_FLAG_S(0)
+#SET_FLAG_C( ((#GET_FLAG_AC())?(1):(0)) )
+#SET_AL( (#GET_AL())&0x0F )
+
+:DAS
+00101111
+if (((#GET_AL()) & 0x0F) >9 || (#GET_FLAG_AC()) ){
+          #SET_AL( #ENSURE_8(#GET_AL()-6) )
+          #SET_FLAG_AC(1)
+}
+if ((#GET_AL()) >0x9F || (#GET_FLAG_C()) ){
+          #SET_AL( #ENSURE_8(#GET_AL()-0x60) )
+          #SET_FLAG_C(1)
+}
+#SET_ALU_FLAGS_MAIN_8(#GET_AL())
+#SET_FLAG_Z((((#GET_AL())==0)?(1):(0))); 
+#SET_FLAG_PAR(parity_map[#GET_AL()]); 
+#SET_FLAG_S( (((#GET_AL()&0x80)==0x80)?(1):(0)) );
+
+
+:MUL W=0,RM MOD=memory
+11110110 MODM|100|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#GET_AL()) * (#LOAD_8(addr));
+#SET_AX(tmp1)
+if((#GET_AH())==0){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+:MUL W=0,RM MOD=reg
+11110110 MODR|100|RM
+tmp1=(#GET_AL()) * (#GET_REG_$RM$_W_8());
+#SET_AX(tmp1)
+if((#GET_AH())==0){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+:MUL W=1,RM MOD=memory
+11110111 MODM|100|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#GET_AX()) * (#LOAD_16(addr));
+#SET_AX(tmp1&0xFFFF)
+#SET_DX(tmp1>>16)
+if((#GET_DX())==0){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+:MUL W=1,RM MOD=reg
+11110111 MODR|100|RM
+tmp1=(#GET_AX()) * (#GET_REG_$RM$_W_16());
+#SET_AX(tmp1&0xFFFF)
+#SET_DX(tmp1>>16)
+if((#GET_DX())==0){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+
+:IMUL W=0,RM MOD=memory
+11110110 MODM|101|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#GET_AL());
+tmp2=(#LOAD_8(addr));
+tmp3=tmp1&0x80;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_8()) + 1;
+}
+if((tmp2&0x80)==0x80){
+    tmp3^=0x80;
+    tmp2=(tmp2 ^ #XOR_NEG_8()) + 1;
+}
+tmp1=tmp1*tmp2;
+if(tmp3!=0 && tmp1!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_16()) + 1;
+}
+#SET_AX(tmp1)
+if((#GET_AH())==0 || (#GET_AH())==0xFF){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+:IMUL W=0,RM MOD=reg
+11110110 MODR|101|RM
+tmp1=(#GET_AL());
+tmp2=(#GET_REG_$RM$_W_8());
+tmp3=tmp1&0x80;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_8()) + 1;
+}
+if((tmp2&0x80)==0x80){
+    tmp3^=0x80;
+    tmp2=(tmp2 ^ #XOR_NEG_8()) + 1;
+}
+tmp1=tmp1*tmp2;
+if(tmp3!=0 && tmp1!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_16()) + 1;
+}
+#SET_AX(tmp1)
+if((#GET_AH())==0 || (#GET_AH())==0xFF){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+:IMUL W=1,RM MOD=memory
+11110111 MODM|101|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#GET_AX());
+tmp2=(#LOAD_16(addr));
+tmp3=tmp1&0x8000;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_16()) + 1;
+}
+if((tmp2&0x8000)==0x8000){
+    tmp3^=0x8000;
+    tmp2=(tmp2 ^ #XOR_NEG_16()) + 1;
+}
+tmp1=tmp1*tmp2;
+if(tmp3!=0 && tmp1!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_32()) + 1;
+}
+#SET_AX(tmp1&0xFFFF)
+#SET_DX(tmp1>>16)
+if((#GET_DX())==0 || (#GET_DX())==0xFFFF){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+
+:IMUL W=1,RM MOD=reg
+11110111 MODR|101|RM
+tmp1=(#GET_AX());
+tmp2=(#GET_REG_$RM$_W_16());
+tmp3=tmp1&0x8000;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_16()) + 1;
+}
+if((tmp2&0x8000)==0x8000){
+    tmp3^=0x8000;
+    tmp2=(tmp2 ^ #XOR_NEG_16()) + 1;
+}
+tmp1=tmp1*tmp2;
+if(tmp3!=0 && tmp1!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_32()) + 1;
+}
+#SET_AX(tmp1&0xFFFF)
+#SET_DX(tmp1>>16)
+if((#GET_DX())==0 || (#GET_DX())==0xFFFF){
+    #SET_FLAG_C(0);
+    #SET_FLAG_O(0);
+}else{
+    #SET_FLAG_C(1);
+    #SET_FLAG_O(1);
+}
+
+:AAM
+11010100
+// Only base 10 version (Operand is 0xA) is documented, but any other base will work. 
+// Later Intel's documentation has the generic form too. 
+// NEC V20 and V30 (and possibly other NEC V-series CPUs) always use base 10, and ignore the argument, causing a number of incompatibilities
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+if(tmp2==0){
+    #INT(0);
+}else{
+    #SET_AH(tmp1/tmp2);
+    #SET_AL(tmp1%tmp2);
+    #SET_ALU_FLAGS_MAIN_16((#GET_AX()))
+}
+
+:DIV W=0,RM MOD=memory
+11110110 MODM|110|RM 
+#MODM_$MODM$_RM_$RM$()
+tmp2=#GET_AX();
+tmp1=(#LOAD_8(addr));
+if(tmp1==0 || tmp2/tmp1>0xFF){
+    #INT(0);
+}else{
+    #SET_AL(tmp2/tmp1);
+    #SET_AH(tmp2%tmp1);
+}
+
+:DIV W=0,RM MOD=reg
+11110110 MODR|110|RM 
+tmp2=#GET_AX();
+tmp1=(#GET_REG_$RM$_W_8());
+if(tmp1==0 || tmp2/tmp1>0xFF){
+    #INT(0);
+}else{
+    #SET_AL(tmp2/tmp1);
+    #SET_AH(tmp2%tmp1);
+}
+
+:DIV W=1,RM MOD=memory
+11110111 MODM|110|RM 
+#MODM_$MODM$_RM_$RM$()
+tmp2=(((long)(#GET_DX()))<<16) | (long)(#GET_AX());
+tmp1=(#LOAD_16(addr));
+if(tmp1==0 || tmp2/tmp1>0xFFFF){
+    #INT(0);
+}else{
+    #SET_AX(tmp2/tmp1);
+    #SET_DX(tmp2%tmp1);
+}
+
+:DIV W=1,RM MOD=reg
+11110111 MODR|110|RM 
+tmp2=(((long)(#GET_DX()))<<16) | (long)(#GET_AX());
+tmp1=(#GET_REG_$RM$_W_16());
+if(tmp1==0 || tmp2/tmp1>0xFFFF){
+    #INT(0);
+}else{
+    #SET_AX(tmp2/tmp1);
+    #SET_DX(tmp2%tmp1);
+}
+
+:IDIV W=0,RM MOD=memory
+11110110 MODM|111|RM 
+#MODM_$MODM$_RM_$RM$()
+tmp2=#GET_AX();
+tmp1=(#LOAD_8(addr));
+tmp3=tmp1&0x80;
+tmp6=0;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_8()) + 1;
+}
+if((tmp2&0x8000)==0x8000){
+    tmp3^=0x80;
+    tmp2=(tmp2 ^ #XOR_NEG_16()) + 1;
+    tmp6=1;
+}
+if(tmp1==0 || tmp2/tmp1>127){
+    #INT(0);
+}else{
+    tmp4=tmp2/tmp1;
+    tmp5=tmp2%tmp1;
+    
+    if(tmp3!=0)
+        tmp4=(tmp4 ^ #XOR_NEG_8()) + 1;
+    if(tmp6!=0)
+        tmp5=(tmp5 ^ #XOR_NEG_8()) + 1;
+    
+    #SET_AL(tmp4);
+    #SET_AH(tmp5);
+}
+
+:IDIV W=0,RM MOD=reg
+11110110 MODR|111|RM 
+tmp1=(#GET_REG_$RM$_W_8());
+tmp2=#GET_AX();
+tmp3=tmp1&0x80;
+tmp6=0;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_8()) + 1;
+}
+if((tmp2&0x8000)==0x8000){
+    tmp3^=0x80;
+    tmp2=(tmp2 ^ #XOR_NEG_16()) + 1;
+    tmp6=1;
+}
+if(tmp1==0 || tmp2/tmp1>127){
+    #INT(0);
+}else{
+    tmp4=tmp2/tmp1;
+    tmp5=tmp2%tmp1;
+    
+    if(tmp3!=0)
+        tmp4=(tmp4 ^ #XOR_NEG_8()) + 1;
+    if(tmp6!=0)
+        tmp5=(tmp5 ^ #XOR_NEG_8()) + 1;
+    
+    #SET_AL(tmp4);
+    #SET_AH(tmp5);
+}
+
+:IDIV W=1,RM MOD=memory
+11110111 MODM|111|RM 
+#MODM_$MODM$_RM_$RM$()
+tmp2=(((long)(#GET_DX()))<<16) | (long)(#GET_AX());
+tmp1=(#LOAD_16(addr));
+tmp3=tmp1&0x8000;
+tmp6=0;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_16()) + 1;
+}
+tmp5=tmp2&0x80000000L;
+if(tmp5!=0){
+    tmp3^=0x8000;
+    tmp2=(tmp2 ^ #XOR_NEG_32()) + 1;
+    tmp6=1;
+}
+if(tmp1==0 || tmp2/tmp1>0x7FFF){
+    #INT(0);
+}else{
+    tmp4=tmp2/tmp1;
+    tmp5=tmp2%tmp1;
+    
+    if(tmp3!=0)
+        tmp4=(tmp4 ^ #XOR_NEG_16()) + 1;
+    if(tmp6!=0)
+        tmp5=(tmp5 ^ #XOR_NEG_16()) + 1;
+    
+    #SET_AX(tmp4);
+    #SET_DX(tmp5);
+}
+
+:IDIV W=1,RM MOD=reg
+11110111 MODR|111|RM 
+tmp2=(((long)(#GET_DX()))<<16) | (long)(#GET_AX());
+tmp1=(#GET_REG_$RM$_W_16());
+tmp3=tmp1&0x8000;
+tmp6=0;
+if(tmp3!=0){
+    tmp1=(tmp1 ^ #XOR_NEG_16()) + 1;
+}
+tmp5=tmp2&0x80000000L;
+if(tmp5!=0){
+    tmp3^=0x8000;
+    tmp2=(tmp2 ^ #XOR_NEG_32()) + 1;
+    tmp6=1;
+}
+if(tmp1==0 || tmp2/tmp1>0x7FFF){
+    #INT(0);
+}else{
+    tmp4=tmp2/tmp1;
+    tmp5=tmp2%tmp1;
+    
+    if(tmp3!=0)
+        tmp4=(tmp4 ^ #XOR_NEG_16()) + 1;
+    if(tmp6!=0)
+        tmp5=(tmp5 ^ #XOR_NEG_16()) + 1;
+    
+    #SET_AX(tmp4);
+    #SET_DX(tmp5);
+}
+
+:AAD
+11010101
+// Only base 10 version (Operand is 0xA) is documented, but any other base will work. 
+// Later Intel's documentation has the generic form too. 
+// NEC V20 and V30 (and possibly other NEC V-series CPUs) always use base 10, and ignore the argument, causing a number of incompatibilities
+tmp2=#READ_NEXT();
+tmp1=(#GET_AH())*tmp2 + (#GET_AL());
+#SET_AX(tmp1&0xFF);
+#SET_ALU_FLAGS_MAIN_16((#GET_AX()))
+
+:CBW
+10011000
+if((#GET_AL())<0x80){
+    #SET_AH(0);
+}else{
+    #SET_AH(0xFF);
+}
+
+:CWD
+10011001
+if((#GET_AX())<0x8000){
+    #SET_DX(0);
+}else{
+    #SET_DX(0xFFFF);
+}
+
+:NOT MOD=memory
+1111011|W MODM|010|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp1=tmp1^ #XOR_NEG_$W$();
+#STORE_$W$(addr,tmp1);
+
+:NOT MOD=reg
+1111011|W MODR|010|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp1=tmp1^ #XOR_NEG_$W$();
+#SET_REG_$RM$_W_$W$(tmp1);
+
+:SHL/SAL MOD=memory
+110100|V|W MODM|100|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp2=tmp1<< (($V$==0)?(1):(#GET_CL()));
+#SET_FLAG_C((tmp2>>$W$)&0x01);
+tmp2=#ENSURE_$W$(tmp2);
+#STORE_$W$(addr,tmp2);
+#SET_ALU_FLAGS_MAIN_$W$(tmp2)
+if( (tmp1>>($W$-1)) != (tmp2>>($W$-1)) ){
+    #SET_FLAG_O(1);
+}else {#SET_FLAG_O(0);}
+
+:SHL/SAL MOD=reg
+110100|V|W MODR|100|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=tmp1<< (($V$==0)?(1):(#GET_CL()));
+#SET_FLAG_C((tmp2>>$W$)&0x01);
+tmp2=#ENSURE_$W$(tmp2);
+#SET_REG_$RM$_W_$W$(tmp2);
+#SET_ALU_FLAGS_MAIN_$W$(tmp2)
+if( (tmp1>>($W$-1)) != (tmp2>>($W$-1)) ){
+    #SET_FLAG_O(1);
+}else {#SET_FLAG_O(0);}
+
+:SHR MOD=memory
+110100|V|W MODM|101|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp3=(($V$==0)?(1):(#GET_CL()));
+tmp2=tmp1 >> tmp3;
+#SET_FLAG_C(  ((tmp3>$W$)?(0):((tmp1>>(tmp3-1))&0x01)) );
+tmp2=#ENSURE_$W$(tmp2);
+#STORE_$W$(addr,tmp2);
+#SET_ALU_FLAGS_MAIN_$W$(tmp2)
+if( (tmp1>>($W$-1)) != (tmp2>>($W$-1)) ){
+    #SET_FLAG_O(1);
+}else {#SET_FLAG_O(0);}
+
+:SHR MOD=reg
+110100|V|W MODR|101|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp3=(($V$==0)?(1):(#GET_CL()));
+tmp2=tmp1 >> tmp3;
+#SET_FLAG_C(  ((tmp3>$W$)?(0):((tmp1>>(tmp3-1))&0x01)) );
+tmp2=#ENSURE_$W$(tmp2);
+#SET_REG_$RM$_W_$W$(tmp2);
+#SET_ALU_FLAGS_MAIN_$W$(tmp2)
+if( (tmp1>>($W$-1)) != (tmp2>>($W$-1)) ){
+    #SET_FLAG_O(1);
+}else {#SET_FLAG_O(0);}
+
+:SAR MOD=memory
+110100|V|W MODM|111|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp3=(($V$==0)?(1):( (#GET_CL() > $W$) ? ($W$) : (#GET_CL()) ));
+tmp4=tmp1 >> ($W$-1); // sign bit
+tmp2=tmp1 >> tmp3;
+#SET_FLAG_C(  ((tmp3>=$W$)?(tmp4):((tmp1>>(tmp3-1))&0x01)) );
+if(tmp4!=0){
+    tmp2|= ((1<<tmp3)-1) << ($W$-tmp3);
+}
+tmp2=#ENSURE_$W$(tmp2);
+#STORE_$W$(addr,tmp2);
+#SET_ALU_FLAGS_MAIN_$W$(tmp2)
+if( tmp3==1 && ((tmp2>>($W$-1))&0x1) != ((tmp2>>($W$-2))&0x01) ){
+    #SET_FLAG_O(1);
+}else {#SET_FLAG_O(0);}
+
+:SAR MOD=reg
+110100|V|W MODR|111|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp3=(($V$==0)?(1):( (#GET_CL() > $W$) ? ($W$) : (#GET_CL()) ));
+tmp4=tmp1 >> ($W$-1); // sign bit
+tmp2=tmp1 >> tmp3;
+#SET_FLAG_C(  ((tmp3>=$W$)?(tmp4):((tmp1>>(tmp3-1))&0x01)) );
+if(tmp4!=0){
+    tmp2|= ((1<<tmp3)-1) << ($W$-tmp3);
+}
+tmp2=#ENSURE_$W$(tmp2);
+#SET_REG_$RM$_W_$W$(tmp2);
+#SET_ALU_FLAGS_MAIN_$W$(tmp2)
+if( tmp3==1 && ((tmp2>>($W$-1))&0x1) != ((tmp2>>($W$-2))&0x01) ){
+    #SET_FLAG_O(1);
+}else {#SET_FLAG_O(0);}
+
+:ROL MOD=memory
+110100|V|W MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % $W$;
+  tmp2=(tmp1<< tmp2) | (tmp1 >> ($W$ - tmp2));
+  tmp2=#ENSURE_$W$(tmp2);
+  #SET_FLAG_C(tmp2&0x1);
+  #STORE_$W$(addr,tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != (tmp2 & 0x01) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:ROL MOD=reg
+110100|V|W MODR|000|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % $W$;
+  tmp2=(tmp1<< tmp2) | (tmp1 >> ($W$ - tmp2));
+  tmp2=#ENSURE_$W$(tmp2);
+  #SET_FLAG_C(tmp2&0x1);
+  #SET_REG_$RM$_W_$W$(tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != (tmp2 & 0x01) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:ROR MOD=memory
+110100|V|W MODM|001|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % $W$;
+  tmp2=(tmp1>> tmp2) | (tmp1 << ($W$ - tmp2));
+  tmp2=#ENSURE_$W$(tmp2);
+  #SET_FLAG_C((tmp2>>($W$-1))&0x1);
+  #STORE_$W$(addr,tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != ((tmp2>>($W$-2)) & 0x01) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:ROR MOD=reg
+110100|V|W MODR|001|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % $W$;
+  tmp2=(tmp1>> tmp2) | (tmp1 << ($W$ - tmp2));
+  tmp2=#ENSURE_$W$(tmp2);
+  #SET_FLAG_C((tmp2>>($W$-1))&0x1);
+  #SET_REG_$RM$_W_$W$(tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != ((tmp2>>($W$-2)) & 0x01) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:RCL MOD=memory
+110100|V|W MODM|010|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % ($W$+1);
+  tmp1= tmp1 | (((#GET_FLAG_C())?(1):(0))<<$W$);
+  tmp2=(tmp1<< tmp2) | (tmp1 >> ($W$ +1 - tmp2));
+  tmp4=(tmp2>>$W$)&0x1;
+  #SET_FLAG_C(tmp4);
+  tmp2=#ENSURE_$W$(tmp2);
+  #STORE_$W$(addr,tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != (tmp4) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:RCL MOD=reg
+110100|V|W MODR|010|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % ($W$+1);
+  tmp1= tmp1 | (((#GET_FLAG_C())?(1):(0))<<$W$);
+  tmp2=(tmp1<< tmp2) | (tmp1 >> ($W$ +1 - tmp2));
+  tmp4=(tmp2>>$W$)&0x1;
+  #SET_FLAG_C(tmp4);
+  tmp2=#ENSURE_$W$(tmp2);
+  #SET_REG_$RM$_W_$W$(tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != (tmp4) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:RCR MOD=memory
+110100|V|W MODM|011|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=(#LOAD_$W$(addr));
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % ($W$+1);
+  tmp1= (tmp1 <<1) | ((#GET_FLAG_C())?(1):(0));
+  tmp2=(tmp1>> tmp2) | (tmp1 << ($W$ +1 - tmp2));
+  tmp4=tmp2&0x1;
+  tmp2>>=1;
+  #SET_FLAG_C(tmp4);
+  tmp2=#ENSURE_$W$(tmp2);
+  #STORE_$W$(addr,tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != ((tmp2>>($W$-2)) & 0x01) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:RCR MOD=reg
+110100|V|W MODR|011|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp3=(($V$==0)?(1):(#GET_CL()));
+if(tmp3>0){
+  tmp2=tmp3 % ($W$+1);
+  tmp1= (tmp1 <<1) | ((#GET_FLAG_C())?(1):(0));
+  tmp2=(tmp1>> tmp2) | (tmp1 << ($W$ +1 - tmp2));
+  tmp4=tmp2&0x1;
+  tmp2>>=1;
+  #SET_FLAG_C(tmp4);
+  tmp2=#ENSURE_$W$(tmp2);
+  #SET_REG_$RM$_W_$W$(tmp2);
+  if( tmp3==1 ){
+      if((tmp2>>($W$-1)) != ((tmp2>>($W$-2)) & 0x01) ){
+          #SET_FLAG_O(1);
+      }else {#SET_FLAG_O(0);}
+  }
+}
+
+:AND RM D=0, MOD=memory
+0010000|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 & tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:AND RM,R D=0, MOD=reg
+0010000|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 & tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:AND RM D=1, MOD=memory
+0010001|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+tmp3=tmp1 & tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:AND RM D=1, MOD=reg
+0010001|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+tmp3=tmp1 & tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:AND RM,IMM MOD=memory
+1000000|W MODM|100|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1&tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:AND RM,IMM MOD=reg
+1000000|W MODR|100|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1&tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+ 
+:AND IMM,A W=0
+00100100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+tmp3=tmp1&tmp2;
+#SET_AL(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:AND IMM,A W=1
+00100101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+tmp3=tmp1&tmp2;
+#SET_AX(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+
+:TEST RM MOD=memory
+1000010|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 & tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:TEST RM,R MOD=reg
+1000010|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 & tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:TEST RM,IMM MOD=memory
+1111011|W MODM|000|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1&tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:TEST RM,IMM MOD=reg
+1111011|W MODR|000|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1&tmp2;
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+ 
+:TEST IMM,A W=0
+10101000
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+tmp3=tmp1&tmp2;
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:TEST IMM,A W=1
+10101001
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+tmp3=tmp1&tmp2;
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+
+:OR RM D=0, MOD=memory
+0000100|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 | tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:OR RM,R D=0, MOD=reg
+0000100|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 | tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:OR RM D=1, MOD=memory
+0000101|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+tmp3=tmp1 | tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:OR RM D=1, MOD=reg
+0000101|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+tmp3=tmp1 | tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:OR RM,IMM MOD=memory
+1000000|W MODM|001|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1 | tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:OR RM,IMM MOD=reg
+1000000|W MODR|001|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1 | tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+ 
+:OR IMM,A W=0
+00001100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+tmp3=tmp1 | tmp2;
+#SET_AL(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:OR IMM,A W=1
+00001101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+tmp3=tmp1 | tmp2;
+#SET_AX(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+
+:XOR RM D=0, MOD=memory
+0011000|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 ^ tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:XOR RM,R D=0, MOD=reg
+0011000|W MODR|REG|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+tmp2=#GET_REG_$REG$_W_$W$();
+tmp3=tmp1 ^ tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:XOR RM D=1, MOD=memory
+0011001|W MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#LOAD_$W$(addr);
+tmp3=tmp1 ^ tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:XOR RM D=1, MOD=reg
+0011001|W MODR|REG|RM
+tmp1=#GET_REG_$REG$_W_$W$();
+tmp2=#GET_REG_$RM$_W_$W$();
+tmp3=tmp1 ^ tmp2;
+#SET_REG_$REG$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:XOR RM,IMM MOD=memory
+1000000|W MODM|110|RM
+#MODM_$MODM$_RM_$RM$()
+tmp1=#LOAD_$W$(addr);
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1 ^ tmp2;
+#STORE_$W$(addr,  #ENSURE_$W$(tmp3) )
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:XOR RM,IMM MOD=reg
+1000000|W MODR|110|RM
+tmp1=#GET_REG_$RM$_W_$W$();
+#READ_NEXT_$W$(tmp2);
+tmp3=tmp1 ^ tmp2;
+#SET_REG_$RM$_W_$W$(#ENSURE_$W$(tmp3))
+#SET_ALU_FLAGS_MAIN_$W$(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+ 
+:XOR IMM,A W=0
+00110100
+tmp1=#GET_AL();
+tmp2=#READ_NEXT();
+tmp3=tmp1 ^ tmp2;
+#SET_AL(#ENSURE_8(tmp3))
+#SET_ALU_FLAGS_MAIN_8(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:OR IMM,A W=1
+00110101
+tmp1=#GET_AX();
+tmp3=#READ_NEXT();
+tmp2=#READ_NEXT(); 
+tmp2=(tmp2<<8)|tmp3;
+tmp3=tmp1 ^ tmp2;
+#SET_AX(#ENSURE_16(tmp3))
+#SET_ALU_FLAGS_MAIN_16(tmp3)
+#SET_FLAG_C(0);
+#SET_FLAG_O(0);
+
+:MOVS
+1010010|W
+tmp1= (stringRepType==0)?(1):(#GET_CX()); // counter
+tmp3= $W$ >> 3; // increment
+
+if(tmp1!=0){
+    if(#GET_FLAG_D())tmp3=-tmp3;
+    #STORE_SEG_$W$(#GET_ES(), #GET_DI(), #LOAD_$W$(#GET_SI()));
+    #SET_DI(#GET_DI()+tmp3);
+    #SET_SI(#GET_SI()+tmp3);
+    tmp1--;
+    if(stringRepType!=0)#SET_CX(tmp1);
+}
+if(tmp1!=0){ #SET_IP(#GET_IP()-2); }
+
+:CMPS
+1010011|W
+tmp1= (stringRepType==0)?(1):(#GET_CX()); // counter
+tmp3= $W$ >> 3; // increment
+tmp6=0; // 0=stop , 1=continue
+
+if(tmp1!=0){
+    if(#GET_FLAG_D())tmp3=-tmp3;
+
+    tmp2=#LOAD_$W$(#GET_SI());
+    tmp4=#LOAD_SEG_$W$(#GET_ES(), #GET_DI());
+    #SET_DI(#GET_DI()+tmp3);
+    #SET_SI(#GET_SI()+tmp3);
+    tmp1--;
+    if(stringRepType!=0)#SET_CX(tmp1);
+
+    tmp4=(tmp4^ #XOR_NEG_$W$())+1;
+    tmp5=tmp2+tmp4;
+    #SET_ALU_FLAGS_MAIN_$W$(tmp5)
+    #SET_FLAG_AC( ((tmp2&0x0F)+(tmp4&0x0F)>0x0F)?(1):(0) )
+    #SET_ALU_FLAGS_CARRY_$W$(tmp5)
+    #SET_ALU_FLAGS_O_$W$(tmp2,tmp4,tmp5,0)
+    flags=flags^0x0011;
+    tmp5=#ENSURE_$W$(tmp5);
+    
+    if(!(stringRepType==0xF3 && #GET_FLAG_NZ() || stringRepType==0xF2 && #GET_FLAG_Z()))tmp6=1;
+}
+if(tmp6==1 && tmp1!=0){ #SET_IP(#GET_IP()-2); }
+
+:SCAS
+1010111|W
+tmp1= (stringRepType==0)?(1):(#GET_CX()); // counter
+tmp3= $W$ >> 3; // increment
+tmp6=0; // 0=stop , 1=continue
+
+if(tmp1!=0){
+    if(#GET_FLAG_D())tmp3=-tmp3;
+
+    tmp4=#LOAD_SEG_$W$(#GET_ES(), #GET_DI());
+    #SET_DI(#GET_DI()+tmp3);
+    tmp1--;
+    if(stringRepType!=0)#SET_CX(tmp1);
+    
+    tmp2=#GET_REG_000_W_$W$();
+
+    tmp4=(tmp4^ #XOR_NEG_$W$())+1;
+    tmp5=tmp2+tmp4;
+    #SET_ALU_FLAGS_MAIN_$W$(tmp5)
+    #SET_FLAG_AC( ((tmp2&0x0F)+(tmp4&0x0F)>0x0F)?(1):(0) )
+    #SET_ALU_FLAGS_CARRY_$W$(tmp5)
+    #SET_ALU_FLAGS_O_$W$(tmp2,tmp4,tmp5,0)
+    flags=flags^0x0011;
+
+    tmp5=#ENSURE_$W$(tmp5);
+    
+    if(!(stringRepType==0xF3 && #GET_FLAG_NZ() || stringRepType==0xF2 && #GET_FLAG_Z()))tmp6=1;
+}
+if(tmp6==1 && tmp1!=0){ #SET_IP(#GET_IP()-2); }
+
+:LODS
+1010110|W
+tmp1= (stringRepType==0)?(1):(#GET_CX()); // counter
+tmp3= $W$ >> 3; // increment
+
+if(tmp1!=0){
+    if(#GET_FLAG_D())tmp3=-tmp3;
+
+    tmp4=#LOAD_SEG_$W$(#GET_DS(),#GET_SI());
+    #SET_REG_000_W_$W$(tmp4);
+    #SET_SI(#GET_SI()+tmp3);
+    tmp1--;
+    if(stringRepType!=0)#SET_CX(tmp1);
+}
+if(tmp1!=0){ #SET_IP(#GET_IP()-2); }
+
+:STOS
+1010101|W
+tmp1= (stringRepType==0)?(1):(#GET_CX()); // counter
+tmp3= $W$ >> 3; // increment
+
+if(tmp1!=0){
+    if(#GET_FLAG_D())tmp3=-tmp3;
+
+    #STORE_SEG_$W$(#GET_ES(),#GET_DI(),#GET_REG_000_W_$W$());
+    #SET_DI(#GET_DI()+tmp3);
+    tmp1--;
+    if(stringRepType!=0)#SET_CX(tmp1);
+}
+if(tmp1!=0){ #SET_IP(#GET_IP()-2); }
+
+:CALL intra-segment, direct
+11101000
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+tmp2=(tmp2<<8)|tmp1;
+#DEC_SP();
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_IP());
+#SET_IP(#ENSURE_16(#GET_IP()+tmp2));
+
+:CALL intra-segment, indirect MOD=memory
+11111111 MODM|010|RM
+#MODM_$MODM$_RM_$RM$()
+tmp2=#LOAD_16(addr);
+#DEC_SP();
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_IP());
+#SET_IP(tmp2);
+
+:CALL intra-segment, indirect MOD=reg
+11111111 MODR|010|RM
+tmp2=#GET_REG_$RM$_W_16();
+#DEC_SP();
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_IP());
+#SET_IP(tmp2);
+
+:CALL inter-segment, direct
+10011010
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+tmp2=(tmp2<<8)|tmp1;
+tmp1=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp3=(tmp3<<8)|tmp1;
+#DEC_SP();
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_CS());
+#DEC_SP();
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_IP());
+#SET_CS(tmp3);
+#SET_IP(tmp2);
+
+:CALL inter-segment, indirect MOD=memory (MOD=reg not valid)
+11111111 MODM|011|RM
+#MODM_$MODM$_RM_$RM$()
+tmp2=#LOAD_16(addr);
+addr+=2;
+tmp3=#LOAD_16(addr);
+#DEC_SP();
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_CS());
+#DEC_SP();
+#STORE_SEG_16(#GET_SS(),#GET_SP(),#GET_IP());
+#SET_CS(tmp3);
+#SET_IP(tmp2);
+
+
+:JMP intra-segment, direct
+11101001
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+tmp2=(tmp2<<8)|tmp1;
+#SET_IP(#ENSURE_16(#GET_IP()+tmp2));
+
+:JMP intra-segment, direct, short
+11101011
+tmp1=#READ_NEXT();
+if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+#SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+
+:JMP intra-segment, indirect MOD=memory
+11111111 MODM|100|RM
+#MODM_$MODM$_RM_$RM$()
+tmp2=#LOAD_16(addr);
+#SET_IP(tmp2);
+
+:JMP intra-segment, indirect MOD=reg
+11111111 MODR|100|RM
+tmp2=#GET_REG_$RM$_W_16();
+#SET_IP(tmp2);
+
+:JMP inter-segment, direct
+11101010
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+tmp2=(tmp2<<8)|tmp1;
+tmp1=#READ_NEXT();
+tmp3=#READ_NEXT();
+tmp3=(tmp3<<8)|tmp1;
+#SET_CS(tmp3);
+#SET_IP(tmp2);
+
+:JMP inter-segment, indirect MOD=memory (MOD=reg not valid)
+11111111 MODM|101|RM
+#MODM_$MODM$_RM_$RM$()
+tmp2=#LOAD_16(addr);
+addr+=2;
+tmp3=#LOAD_16(addr);
+#SET_CS(tmp3);
+#SET_IP(tmp2);
+
+:RET intra-segment
+11000011
+#SET_IP(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+
+:RET intra-segment, adding immed to SP
+11000010
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+tmp2=(tmp2<<8)|tmp1;
+#SET_IP(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+#SET_SP(#ENSURE_16(#GET_SP()+tmp2))
+
+:RET inter-segment
+11001011
+#SET_IP(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+#SET_CS(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+
+:RET inter-segment, adding immed to SP
+11001010
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+tmp2=(tmp2<<8)|tmp1;
+#SET_IP(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+#SET_CS(#LOAD_SEG_16(#GET_SS(),#GET_SP()))
+#INC_SP()
+#SET_SP(#ENSURE_16(#GET_SP()+tmp2))
+
+:JZ/JE
+01110100
+tmp1=#READ_NEXT();
+if(#GET_FLAG_Z()){
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JL/JNGE
+01111100
+tmp1=#READ_NEXT();
+if(((flags&0x0800)>>8)!=(flags&0x80)){
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JLE/JNG
+01111110
+tmp1=#READ_NEXT();
+if( (((flags&0x0800)>>8)!=(flags&0x80)) || #GET_FLAG_Z() ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JB/JNAE
+01110010
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_C() ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JBE/JNA
+01110110
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_C() || #GET_FLAG_Z() ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JP/JPE
+01111010
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_PE()  ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JO
+01110000
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_O()  ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JS
+01111000
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_M()  ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNE/JNZ
+01110101
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_NZ()  ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNL/JGE
+01111101
+tmp1=#READ_NEXT();
+if( ((flags&0x0800)>>8)==(flags&0x80)  ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNLE/JG
+01111111
+tmp1=#READ_NEXT();
+if(  (((flags&0x0800)>>8)==(flags&0x80)) || #GET_FLAG_NZ()  ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNB/JAE
+01110011
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_NC()  ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNBE/JA
+01110111
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_NC() && #GET_FLAG_NZ() ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNP/JPO
+01111011
+tmp1=#READ_NEXT();
+if(  #GET_FLAG_PO() ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNO
+01110001
+tmp1=#READ_NEXT();
+if( ! #GET_FLAG_O() ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JNS
+01111001
+tmp1=#READ_NEXT();
+if( #GET_FLAG_P() ) {
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:LOOP
+11100010
+tmp1=#READ_NEXT();
+#SET_CX(#ENSURE_16(#GET_CX()-1))
+if( #GET_CX() !=0 ){
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:LOOPZ/LOOPE
+11100001
+tmp1=#READ_NEXT();
+#SET_CX(#ENSURE_16(#GET_CX()-1))
+if( #GET_FLAG_Z() && #GET_CX() !=0 ){
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:LOOPNZ/LOOPNE
+11100000
+tmp1=#READ_NEXT();
+#SET_CX(#ENSURE_16(#GET_CX()-1))
+if( #GET_FLAG_NZ() && #GET_CX() !=0 ){
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:JCXZ
+11100011
+tmp1=#READ_NEXT();
+if( #GET_CX() ==0 ){
+    if((tmp1&0x80)==0x80)tmp1=0xFF00|tmp1; // sign extend
+    #SET_IP(#ENSURE_16(#GET_IP()+tmp1));
+}
+
+:INT type
+11001101
+tmp1=#READ_NEXT();
+#INT(tmp1)
+
+:INT 3
+11001100
+#INT(3)
+
+:INTO
+11001110
+if ( #GET_FLAG_O() ){
+    #INT(4)
+}
+
+:IRET
+11001111
+#SET_IP(#LOAD_SEG_16(#GET_SS(), #GET_SP()));
+#INC_SP();
+#SET_CS(#LOAD_SEG_16(#GET_SS(), #GET_SP()));
+#INC_SP();
+#SET_FLAGS(#LOAD_SEG_16(#GET_SS(), #GET_SP()));
+#INC_SP();
+
+:CLC
+11111000
+#SET_FLAG_C(0)
+
+:CMC
+11110101
+#SET_FLAGS( #GET_FLAGS() ^ 0x01 );
+
+:STC
+11111001
+#SET_FLAG_C(1)
+
+:CLD
+11111100
+#SET_FLAG_D(0)
+
+:STD
+11111101
+#SET_FLAG_D(1) 
+
+:CLI
+11111010
+#SET_FLAG_I(0)
+
+:STI
+11111011
+#SET_FLAG_I(1)
+
+:HLT
+11110100
+#SET_IP(#GET_IP()-1)
+flag_halt=true;
+
+:WAIT
+10011011
+// Not-implemented
+
+:ESC MOD=memory
+11011|XXX MODM|REG|RM
+#MODM_$MODM$_RM_$RM$()
+
+:ESC MOD=reg
+11011|XXX MODR|REG|RM
+
+:.
+
+          } // end step()
+

@@ -1,0 +1,864 @@
+package jss.devices.cpu.impl;
+
+import jss.configuration.ConfigurationValueOptionException;
+import jss.configuration.ConfigurationValueTypeException;
+import jss.configuration.DeviceConfiguration;
+import jss.configuration.DeviceConfigurationException;
+import jss.devices.bus.ControlBusUnknownSignalException;
+import jss.devices.cpu.CPUInvalidOpcodeException;
+import jss.devices.memory.MemoryAccessException;
+import jss.simulation.Simulation;
+import jss.devices.cpu.CPUState;
+import jss.devices.cpu.AbstractCPUDevice;
+
+public class Intel8080 extends AbstractCPUDevice {
+
+    int PC;
+    int last_PC;
+    int []registers;
+    int SP;
+    int flags;
+    int []parity_map;
+    boolean flag_ei;
+    boolean flag_halt;
+    int opcodeByte1;
+    int acc;
+    int tmp1=0,tmp2=0,tmp3=0;
+    byte[] int_instr=null;
+    int int_instr_pc=0;
+          
+	CPUState cpuState=new CPUState();
+	
+	public CPUState getCPUState() {
+		cpuState.setRegister("PC", 16 , PC);
+		cpuState.setRegister("SP", 16 , SP);
+		cpuState.setRegister("A", 8 , acc);
+		cpuState.setRegister("B", 8 , registers[0]);
+		cpuState.setRegister("C", 8 , registers[1]);
+		cpuState.setRegister("D", 8 , registers[2]);
+		cpuState.setRegister("E", 8 , registers[3]);
+		cpuState.setRegister("H", 8 , registers[4]);
+		cpuState.setRegister("L", 8 , registers[5]);
+		cpuState.setRegister("FLAGS", 8 , flags);
+		return cpuState;
+	}
+      
+    @Override
+    public void configure(DeviceConfiguration config, Simulation sim)
+	   throws DeviceConfigurationException, ConfigurationValueTypeException {
+            super.configure(config,sim);
+
+            registers=new int[6];
+            parity_map=new int[256];
+    		for(int i=0;i<256;i++) {
+    			parity_map[i]=
+    				((   (i&0x1)+
+    					((i>>1)&0x1)+
+    					((i>>2)&0x1)+
+    					((i>>3)&0x1)+
+    					((i>>4)&0x1)+
+    					((i>>5)&0x1)+
+    					((i>>6)&0x1)+
+    					((i>>7)&0x1)
+    				)&0x1)^0x1;
+    					
+    		}
+    }
+
+    @Override
+    public void initialize()
+	   throws DeviceConfigurationException, ConfigurationValueTypeException, ConfigurationValueOptionException {
+          super.initialize();
+          
+          for(int i=0;i<registers.length;i++)registers[i]=0;
+          flags=0x02;
+          SP=0;
+          PC=0;
+          flag_halt=false;
+          flag_ei=true;
+          last_PC=0;
+    }
+
+	@Override
+	public long getCurrentAddress() {
+		return this.PC;
+	}
+          
+	public int getLast_pc() {
+		return last_PC;
+	}
+
+	public boolean isFlag_halt() {
+		return flag_halt;
+	}
+
+	public int getInstr() {
+		return opcodeByte1;
+	}
+          
+
+
+#define READ_NEXT() #{ ((int_instr==null)?((int)memoryBus.read(PC++) &0xFF):(int_instr[int_instr_pc++] & 0xFF)) #}
+
+#define SET_A(v) #{ acc=(v) & 0xFF; #}
+#define SET_B(v) #{ registers[0]=v; #}
+#define SET_C(v) #{ registers[1]=v; #}
+#define SET_D(v) #{ registers[2]=v; #}
+#define SET_E(v) #{ registers[3]=v; #}
+#define SET_H(v) #{ registers[4]=v; #}
+#define SET_L(v) #{ registers[5]=v; #}
+#define SET_BC(v) #{ registers[0]=((v)&0xFFFF)>>8; registers[1]=(v)&0xFF; #}
+#define SET_DE(v) #{ registers[2]=((v)&0xFFFF)>>8; registers[3]=(v)&0xFF; #}
+#define SET_HL(v) #{ registers[4]=((v)&0xFFFF)>>8; registers[5]=(v)&0xFF; #}
+#define SET_SP(v) #{ SP=(v)&0xFFFF; #}
+#define SET_PC(v) #{ PC=(v)&0xFFFF; #}
+#define DEC_SP() #{ SP--; SP&=0xFFFF; #}
+#define INC_SP() #{ SP++; SP&=0xFFFF; #}
+#define SET_MEMORY(v) #{ memoryBus.write(((registers[4]<<8)|(registers[5])),v); #}
+#define STORE(a,v) #{ memoryBus.write(a,v); #}
+
+#define GET_A() #{ acc #}
+#define GET_B() #{ registers[0] #}
+#define GET_C() #{ registers[1] #}
+#define GET_D() #{ registers[2] #}
+#define GET_E() #{ registers[3] #}
+#define GET_H() #{ registers[4] #}
+#define GET_L() #{ registers[5] #}
+#define GET_BC() #{ ((registers[0]<<8)|(registers[1])) #}
+#define GET_DE() #{ ((registers[2]<<8)|(registers[3])) #}
+#define GET_HL() #{ ((registers[4]<<8)|(registers[5])) #}
+#define GET_SP() #{ SP #}
+#define GET_PC() #{ PC #}
+#define GET_MEMORY() #{ (int)memoryBus.read(((registers[4]<<8)|(registers[5]))) #}
+#define LOAD(a) #{ (int)memoryBus.read(a) #}
+
+// Flags = S|Z|-|AC|-|P|-|C
+// Flags = S|Z|0|AC|0|P|1|C
+#define GET_FLAGS() #{ flags #}
+#define SET_FLAGS(v) #{ flags=(v & 0x00D7) | 0x02; #}
+#define GET_FLAG_NZ() #{ ((flags&0x40)==0) #}
+#define GET_FLAG_Z() #{ ((flags&0x40)==0x40) #}
+#define SET_FLAG_Z(v) #{ flags=(flags&0xBF)|((v)<<6); #}
+#define GET_FLAG_NC() #{ ((flags&0x1)==0) #}
+#define GET_FLAG_C() #{ ((flags&0x1)==0x1) #}
+#define SET_FLAG_C(v) #{ flags=(flags&0xFE)|(v); #}
+#define GET_FLAG_PO() #{ ((flags&0x4)==0) #}
+#define GET_FLAG_PE() #{ ((flags&0x4)==0x4) #}
+#define SET_FLAG_PAR(v) #{ flags=(flags&0xFB)|((v)<<2); #}
+#define GET_FLAG_P() #{ ((flags&0x80)==0) #}
+#define GET_FLAG_M() #{ ((flags&0x80)==0x80) #}
+#define SET_FLAG_S(v) #{ flags=(flags&0x7F)|((v)<<7); #}
+#define GET_FLAG_AC() #{ ((flags&0x10)==0x10) #}
+/* # d e f i n e SET_FLAG_AC(v) #{ flags=(flags&0xEF)|((v)<<4); #} */
+#define SET_FLAG_AC(v) #{ ERROR; #}
+#define SET_FLAG_AC1(v) #{ flags=(flags&0xEF)|((v)<<4); #}
+#define SET_FLAG_AC2(v) #{ flags=(flags&0xEF) | ((v)&0x10); #} 
+
+#define SET_ALU_FLAGS(old,new) #{ #SET_FLAG_Z(((new&0xFF)==0)?(1):(0)); #SET_FLAG_PAR(parity_map[new]); #SET_FLAG_S( ((new&0x80)==0x80)?(1):(0) ); #}
+#define SET_ALU_FLAGS_CARRY(new) #{ #SET_FLAG_C( ((new&0x100)==0x100)?(1):(0)); #}
+
+MAP SSS
+111 A
+000 B
+001 C
+010 D
+011 E
+100 H
+101 L
+END
+
+MAP DDD
+111 A
+000 B
+001 C
+010 D
+011 E
+100 H
+101 L
+END
+
+MAP RP
+00 BC
+01 DE
+10 HL
+11 SP
+END
+
+MAP CCC
+000 NZ
+001 Z
+010 NC
+011 C
+100 PO
+101 PE
+110 P
+111 M
+END
+
+MAP AAA
+000 0
+001 1
+010 2
+011 3
+100 4
+101 5
+110 6
+111 7
+END
+
+	@Override
+	public void stepImpl() throws MemoryAccessException, ControlBusUnknownSignalException, CPUInvalidOpcodeException {
+                    last_PC=PC;
+                    
+                    int_instr=null;
+                    if(flag_ei && controlBus.isSignalSet("INT")) {
+                              int_instr=controlBus.getSignalData("INT");
+                              int_instr_pc=0;
+                              flag_halt=false;
+                              controlBus.clearSignal("INT");
+                    }
+
+		if(flag_halt) {
+			return ;
+		}
+
+
+if(int_instr!=null){
+          opcodeByte1=(int)int_instr[int_instr_pc++] & 0xFF;
+}else{
+          opcodeByte1=(int)memoryBus.read(PC++);
+}
+
+
+
+
+:MOV R1,R2
+01|DDD|SSS
+#SET_$DDD$(#GET_$SSS$())
+
+:MOV M,R
+01110|SSS
+#SET_MEMORY(#GET_$SSS$())
+
+:MOV R,M
+01|DDD|110
+#SET_$DDD$(#GET_MEMORY())
+
+:MVI R
+00|DDD|110
+#SET_$DDD$(#READ_NEXT())
+
+:MVI M
+00110110
+#SET_MEMORY(#READ_NEXT())
+
+:LXI B
+00000001
+#SET_C(#READ_NEXT())
+#SET_B(#READ_NEXT())
+
+:LXI D
+00010001
+#SET_E(#READ_NEXT())
+#SET_D(#READ_NEXT())
+
+:LXI H
+00100001
+#SET_L(#READ_NEXT())
+#SET_H(#READ_NEXT())
+
+:STAX B
+00000010
+#STORE(#GET_BC(),#GET_A())
+
+:STAX D
+00010010
+#STORE(#GET_DE(),#GET_A())
+
+:LDAX B
+00001010
+#SET_A(#LOAD(#GET_BC()))
+
+:LDAX D
+00011010
+#SET_A(#LOAD(#GET_DE()))
+
+:STA
+00110010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+#STORE(tmp2,#GET_A());
+
+:LDA
+00111010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+#SET_A(#LOAD(tmp2))
+
+:SHLD
+00100010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+#STORE(tmp2,#GET_L())
+tmp2++;
+#STORE(tmp2,#GET_H())
+
+:LHLD
+00101010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+#SET_L(#LOAD(tmp2))
+tmp2++;
+#SET_H(#LOAD(tmp2))
+
+:XCHG
+11101011
+tmp1=#GET_H();
+#SET_H(#GET_D())
+#SET_D(tmp1)
+tmp1=#GET_L();
+#SET_L(#GET_E())
+#SET_E(tmp1)
+
+:PUSH B
+11000101
+#DEC_SP()
+#STORE(#GET_SP(),#GET_B())
+#DEC_SP()
+#STORE(#GET_SP(),#GET_C())
+
+:PUSH D
+11010101
+#DEC_SP()
+#STORE(#GET_SP(),#GET_D())
+#DEC_SP()
+#STORE(#GET_SP(),#GET_E())
+
+:PUSH H
+11100101
+#DEC_SP()
+#STORE(#GET_SP(),#GET_H())
+#DEC_SP()
+#STORE(#GET_SP(),#GET_L())
+
+:PUSH PSW
+11110101
+#DEC_SP()
+#STORE(#GET_SP(),#GET_A())
+#DEC_SP()
+#STORE(#GET_SP(),#GET_FLAGS())
+
+:POP B
+11000001
+#SET_C(#LOAD(#GET_SP()))
+#INC_SP()
+#SET_B(#LOAD(#GET_SP()))
+#INC_SP()
+
+:POP D
+11010001
+#SET_E(#LOAD(#GET_SP()))
+#INC_SP()
+#SET_D(#LOAD(#GET_SP()))
+#INC_SP()
+
+:POP H
+11100001
+#SET_L(#LOAD(#GET_SP()))
+#INC_SP()
+#SET_H(#LOAD(#GET_SP()))
+#INC_SP()
+
+:POP PSW
+11110001
+#SET_FLAGS(#LOAD(#GET_SP()))
+#INC_SP()
+#SET_A(#LOAD(#GET_SP()))
+#INC_SP()
+
+:XTHL
+11100011
+tmp1=#LOAD(#GET_SP());
+#STORE(#GET_SP(),#GET_L())
+#SET_L(tmp1)
+#INC_SP()
+tmp2=#LOAD(#GET_SP());
+#STORE(#GET_SP(),#GET_H())
+#SET_H(tmp2)
+#DEC_SP()
+
+:SPHL
+11111001
+#SET_SP(#GET_HL())
+
+:LXI SP
+00110001
+tmp1=#READ_NEXT();
+tmp1=(#READ_NEXT()<<8)|tmp1;
+#SET_SP(tmp1)
+
+:JMP
+11000011
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+#SET_PC(tmp2)
+
+:JC
+11|CCC|010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+if( #GET_FLAG_$CCC$() ){
+  #SET_PC(tmp2)
+}
+
+:PCHL
+11101001
+#SET_PC(#GET_HL())
+
+:CALL
+11001101
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+#DEC_SP()
+#STORE(#GET_SP(),((#GET_PC()>>8)&0xFF))
+#DEC_SP()
+#STORE(#GET_SP(),(#GET_PC()&0xFF))
+#SET_PC(tmp2)
+
+:CALLC
+11|CCC|100
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+if( #GET_FLAG_$CCC$() ){
+  #DEC_SP()
+  #STORE(#GET_SP(),((#GET_PC()>>8)&0xFF))
+  #DEC_SP()
+  #STORE(#GET_SP(),(#GET_PC()&0xFF))
+  #SET_PC(tmp2)
+}
+
+:RET
+11001001
+tmp1=#LOAD(#GET_SP());
+#INC_SP()
+#SET_PC((#LOAD(#GET_SP())<<8)|tmp1)
+#INC_SP()
+
+:RETC
+11|CCC|000
+if( #GET_FLAG_$CCC$() ){
+  tmp1=#LOAD(#GET_SP());
+  #INC_SP()
+  #SET_PC((#LOAD(#GET_SP())<<8)|tmp1)
+  #INC_SP()
+}
+
+:RST
+11|AAA|111
+#DEC_SP()
+#STORE(#GET_SP(),((#GET_PC()>>8)&0xFF))
+#DEC_SP()
+#STORE(#GET_SP(),(#GET_PC()&0xFF))
+#SET_PC(opcodeByte1&0x38)
+
+:INR R
+00|DDD|100
+tmp1=#GET_$DDD$();
+tmp2=(tmp1+1)&0xFF;
+tmp3=(tmp1&0x0F)+1;
+#SET_$DDD$(tmp2);
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:DCR R
+00|DDD|101
+tmp1=#GET_$DDD$();
+tmp2=(tmp1-1)&0xFF;
+tmp3=(tmp1&0x0F)+0x0F;
+#SET_$DDD$(tmp2);
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:INR M
+00110100
+tmp1=#GET_MEMORY();
+tmp2=(tmp1+1)&0xFF;
+tmp3=(tmp1&0x0F)+1;
+#SET_MEMORY(tmp2);
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:DCR M
+00110101
+tmp1=#GET_MEMORY();
+tmp2=(tmp1-1)&0xFF;
+tmp3=(tmp1&0x0F)+0x0F;
+#SET_MEMORY(tmp2);
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:INX RP
+00|RP|0011
+tmp1=#GET_$RP$();
+tmp1=tmp1+1;
+#SET_$RP$(tmp1&0xFFFF)
+
+:DCX RP
+00|RP|1011
+tmp1=#GET_$RP$();
+tmp1=tmp1-1;
+#SET_$RP$(tmp1&0xFFFF)
+
+:ADD R
+10000|SSS
+tmp1=#GET_A();
+tmp2=tmp1+#GET_$SSS$();
+tmp3=(tmp1&0x0F)+(#GET_$SSS$()&0x0F);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:ADC R
+10001|SSS
+tmp1=#GET_A();
+tmp2=tmp1+#GET_$SSS$()+(#GET_FLAGS()&0x1);
+tmp3=(tmp1&0x0F)+((#GET_$SSS$())&0x0F)+(#GET_FLAGS()&0x1);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:ADD M
+10000110
+tmp1=#GET_A();
+tmp3=#GET_MEMORY();
+tmp2=tmp1+tmp3;
+tmp3=(tmp1&0x0F)+(tmp3&0x0F);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:ADC M
+10001110
+tmp1=#GET_A();
+tmp3=#GET_MEMORY();
+tmp2=tmp1+tmp3+(#GET_FLAGS()&0x1);
+tmp3=(tmp1&0x0F)+(tmp3&0x0F)+(#GET_FLAGS()&0x1);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:ADI
+11000110
+tmp1=#GET_A();
+tmp3=#READ_NEXT();
+tmp2=tmp1+(tmp3&0xFF);
+tmp3=(tmp1&0x0F) + (tmp3&0x0F);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:ACI
+11001110
+tmp1=#GET_A();
+tmp3=#READ_NEXT();
+tmp2=tmp1+tmp3+(#GET_FLAGS()&0x1);
+tmp3=(tmp1&0x0F)+(tmp3&0x0F)+(#GET_FLAGS()&0x1);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+:DAD RP
+00|RP|1001
+tmp1=#GET_HL();
+tmp2=tmp1+#GET_$RP$();
+#SET_ALU_FLAGS_CARRY((tmp2>>8));
+#SET_HL(tmp2)
+
+:SUB R
+10010|SSS
+tmp1=#GET_A();
+tmp2=tmp1 + ((#GET_$SSS$())^0xFF) + 1;
+tmp3=(tmp1&0x0F) + (((#GET_$SSS$())^0xFF)&0x0F) + 1;
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:SBB R
+10011|SSS
+tmp1=#GET_A();
+tmp3=#GET_$SSS$();
+tmp2=tmp1 + ((tmp3 + (#GET_FLAGS()&0x01))^0xFF) + 1 ;
+//tmp3=(tmp1&0x0F) + (((tmp3 + (#GET_FLAGS()&0x01))^0xFF)&0x0F) + 1;
+tmp3=(tmp1&0x0F) + ((tmp3^0xFF)&0x0F) + ((#GET_FLAGS()&0x01)^0x01);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:SUB M
+10010110
+tmp1=#GET_A();
+tmp3=#GET_MEMORY();
+tmp2=tmp1 + (tmp3^0xFF) + 1;
+tmp3=(tmp1&0x0F) + ((tmp3^0xFF)&0x0F) + 1;
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:SBB M
+10011110
+tmp1=#GET_A();
+tmp3=#GET_MEMORY();
+tmp2=tmp1 + ((tmp3 + (#GET_FLAGS()&0x01))^0xFF) + 1 ;
+//tmp3=(tmp1&0x0F) + (((tmp3 + (#GET_FLAGS()&0x01))^0xFF)&0x0F) + 1 ;
+tmp3=(tmp1&0x0F) + ((tmp3^0xFF)&0x0F) + ((#GET_FLAGS()&0x01)^0x01);
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:SUI
+11010110
+tmp1=#GET_A();
+tmp3=#READ_NEXT();
+tmp2=tmp1 + (tmp3^0xFF) + 1;
+tmp3=(tmp1&0x0F) + ((tmp3^0xFF)&0x0F) + 1;
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:SBI
+11011110
+tmp1=#GET_A();
+tmp3=#READ_NEXT();
+tmp2=tmp1 + ((tmp3 + (#GET_FLAGS()&0x01))^0xFF) + 1;
+tmp3=(tmp1&0x0F) + (((tmp3 + (#GET_FLAGS()&0x01))^0xFF)&0x0F) + 1;
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:ANA R
+10100|SSS
+#SET_FLAG_AC1( ( ((#GET_A())| (#GET_$SSS$())) &0x08)>>3 ); 
+#SET_A(#GET_A() & (#GET_$SSS$()))
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+flags=flags&0xFE;
+
+:XRA R
+10101|SSS
+#SET_A(#GET_A() ^ (#GET_$SSS$()))
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+#SET_FLAG_AC1(0);
+#SET_FLAG_C(0);
+flags=flags&0xFE;
+
+:ORA R
+10110|SSS
+#SET_A(#GET_A() | (#GET_$SSS$()))
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+#SET_FLAG_AC1(0);
+#SET_FLAG_C(0);
+flags=flags&0xFE;
+
+:CMP R
+10111|SSS
+tmp1=#GET_A();
+tmp2=tmp1 + ((#GET_$SSS$())^0xFF) + 1;
+tmp3=(tmp1&0x0F) + (((#GET_$SSS$())^0xFF)&0x0F) + 1;
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:ANA M
+10100110
+tmp1=#GET_MEMORY();
+#SET_FLAG_AC1( ( ((#GET_A())| tmp1) &0x08)>>3 ); 
+#SET_A(#GET_A() & tmp1)
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+flags=flags&0xFE;
+
+:XRA M
+10101110
+#SET_A(#GET_A() ^ (#GET_MEMORY()))
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+#SET_FLAG_AC1(0);
+#SET_FLAG_C(0);
+flags=flags&0xFE;
+
+:ORA M
+10110110
+#SET_A(#GET_A() | (#GET_MEMORY()))
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+#SET_FLAG_AC1(0);
+#SET_FLAG_C(0);
+flags=flags&0xFE;
+
+:CMP M
+10111110
+tmp1=#GET_A();
+tmp3=#GET_MEMORY();
+tmp2=tmp1 + (tmp3^0xFF) + 1;
+tmp3=(tmp1&0x0F) + ((tmp3^0xFF)&0x0F) + 1;
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_FLAG_AC2( tmp3 ); #SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:ANI
+11100110
+tmp1=#READ_NEXT();
+#SET_FLAG_AC1( ( ((#GET_A())| tmp1) &0x08)>>3 ); 
+#SET_A(#GET_A() & tmp1)
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+flags=flags&0xFE;
+
+:XRI
+11101110
+#SET_A(#GET_A() ^ (#READ_NEXT()))
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+#SET_FLAG_AC1(0);
+#SET_FLAG_C(0);
+flags=flags&0xFE;
+
+:ORI
+11110110
+#SET_A(#GET_A() | (#READ_NEXT()))
+#SET_ALU_FLAGS(#GET_A(),#GET_A());
+#SET_FLAG_AC1(0);
+#SET_FLAG_C(0);
+flags=flags&0xFE;
+
+:CPI
+11111110
+tmp1=#GET_A();
+tmp3=#READ_NEXT();
+tmp2=tmp1 + (tmp3^0xFF) + 1;
+tmp3=(tmp1&0x0F) + ((tmp3^0xFF)&0x0F) + 1;
+#SET_ALU_FLAGS_CARRY(tmp2)
+tmp2=tmp2&0xFF;
+#SET_FLAG_AC2( tmp3 ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+flags=flags^1;
+
+:RLC
+00000111
+tmp1=#GET_A();
+tmp1<<=1;
+#SET_ALU_FLAGS_CARRY(tmp1)
+#SET_A( (tmp1&0xFF) | (flags&0x1) )
+
+:RRC
+00001111
+tmp1=#GET_A();
+#SET_FLAG_C( tmp1&0x1 )
+tmp1>>=1;
+tmp1|= ((flags&0x1)<<7);
+#SET_A(tmp1);
+
+:RAL
+00010111
+tmp1=#GET_A();
+tmp1<<=1;
+#SET_A( (tmp1&0xFF) | (flags&0x1) )
+#SET_ALU_FLAGS_CARRY(tmp1)
+
+:RAR
+00011111
+tmp1=#GET_A();
+#SET_A( (tmp1>>1) | ((flags&0x1)<<7) );
+#SET_FLAG_C( tmp1&0x1 )
+
+:CMA
+00101111
+#SET_A(~(#GET_A()))
+
+:STC
+00110111
+#SET_FLAG_C(1)
+
+:CMC
+00111111
+#SET_FLAG_C( ((~flags)&0x01) )
+
+:DAA
+00100111
+tmp1=#GET_A();
+tmp2=0; // add
+if( ((tmp1 & 0xF) > 9) || #GET_FLAG_AC() ){
+    tmp2 = 0x06;
+}
+
+tmp3=(#GET_FLAG_C()) ? (1) : (0); // tmp3=carry
+if (((tmp1 & 0xF0) > 0x90) ||
+      (((tmp1 & 0xF0) >= 0x90) && ((tmp1 & 0xF) > 9)) ||
+      tmp3!=0) {
+    tmp2 |= 0x60;
+    tmp3 = 1;
+}      
+
+tmp2=tmp1+tmp2;
+tmp2=tmp2&0xFF;
+#SET_A(tmp2)
+#SET_FLAG_AC1( ((tmp2&0x0F)<(tmp1&0x0F))?(1):(0) ); 
+#SET_ALU_FLAGS(tmp1,tmp2);
+
+#SET_FLAG_C(tmp3);
+
+
+:IN
+11011011
+#SET_A((int)ioBus.read(#READ_NEXT()))
+
+:OUT
+11010011
+ioBus.write(#READ_NEXT(),#GET_A());
+
+:EI
+11111011
+flag_ei=true;
+
+:DI
+11110011
+flag_ei=false;
+
+:NOP
+00000000
+
+:HLT
+01110110
+flag_halt=true;
+
+:.
+
+          } // end step()
+

@@ -1,0 +1,435 @@
+package jss.devices.cpu.impl;
+
+import jss.devices.cpu.AbstractDisassembler;
+import jss.devices.cpu.CPUInvalidOpcodeException;
+import jss.devices.memory.MemoryAccessException;
+import jss.devices.bus.ControlBusUnknownSignalException;
+
+public class Intel8080Disassembler extends AbstractDisassembler {
+
+    int opcodeByte1;
+    int tmp1=0,tmp2=0;
+          
+#define READ_NEXT() #{ ((int)memoryBus.read(PC++)) #}
+
+
+
+MAP SSS
+111 A
+000 B
+001 C
+010 D
+011 E
+100 H
+101 L
+END
+
+MAP DDD
+111 A
+000 B
+001 C
+010 D
+011 E
+100 H
+101 L
+END
+
+MAP RP
+00 BC
+01 DE
+10 HL
+11 SP
+END
+
+MAP CCC
+000 NZ
+001 Z
+010 NC
+011 C
+100 PO
+101 PE
+110 P
+111 M
+END
+
+MAP AAA
+000 0
+001 1
+010 2
+011 3
+100 4
+101 5
+110 6
+111 7
+END
+
+    @Override
+	public void step() throws MemoryAccessException, CPUInvalidOpcodeException, ControlBusUnknownSignalException {
+          last_PC=PC;
+                    
+          opcodeByte1=(int)memoryBus.read(PC++);
+
+:MOV R1,R2
+01|DDD|SSS
+write("MOV $DDD$,$SSS$");
+
+:MOV M,R
+01110|SSS
+write("MOV M,$SSS$");
+
+:MOV R,M
+01|DDD|110
+write("MOV $DDD$,M");
+
+:MVI R
+00|DDD|110
+tmp1=#READ_NEXT();
+write(String.format("MVI $DDD$,%02X",tmp1));
+
+:MVI M
+00110110
+tmp1=#READ_NEXT();
+write(String.format("MVI M,%02X",tmp1));
+
+:LXI B
+00000001
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+write(String.format("LXI BC,%04X    # B=%02X, C=%02X",(tmp2<<8)|tmp1,tmp2,tmp1));
+
+:LXI D
+00010001
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+write(String.format("LXI DE,%04X    # D=%02X, E=%02X",(tmp2<<8)|tmp1,tmp2,tmp1));
+
+:LXI H
+00100001
+tmp1=#READ_NEXT();
+tmp2=#READ_NEXT();
+write(String.format("LXI HL,%04X    # H=%02X, L=%02X",(tmp2<<8)|tmp1,tmp2,tmp1));
+
+:STAX B
+00000010
+write("STAX B");
+
+:STAX D
+00010010
+write("STAX D");
+
+:LDAX B
+00001010
+write("LDAX B");
+
+:LDAX D
+00011010
+write("LDAX D");
+
+:STA
+00110010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("STA %04X      # [%04X] = A",tmp2,tmp2));
+
+:LDA
+00111010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("LDA %04X      # A = [%04X]",tmp2,tmp2));
+
+:SHLD
+00100010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("SHLD %04X      # [%04X] = HL",tmp2,tmp2));
+
+:LHLD
+00101010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("LHLD %04X      # HL = [%04X]",tmp2,tmp2));
+
+:XCHG
+11101011
+write("XCHG");
+
+:PUSH B
+11000101
+write("PUSH B");
+
+:PUSH D
+11010101
+write("PUSH D");
+
+:PUSH H
+11100101
+write("PUSH H");
+
+:PUSH PSW
+11110101
+write("PUSH PSW");
+
+:POP B
+11000001
+write("POP B");
+
+:POP D
+11010001
+write("POP D");
+
+:POP H
+11100001
+write("POP H");
+
+:POP PSW
+11110001
+write("POP PSW");
+
+:XTHL
+11100011
+write("XTHL");
+
+:SPHL
+11111001
+write("SPHL");
+
+:LXI SP
+00110001
+tmp1=#READ_NEXT();
+tmp1=(#READ_NEXT()<<8)|tmp1;
+write(String.format("LXI SP,%04X    # SP = %04X",tmp1,tmp1));
+
+:JMP
+11000011
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("JMP %04X",tmp2));
+
+:JC
+11|CCC|010
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("JC $CCC$, %04X",tmp2));
+
+:PCHL
+11101001
+write("PCHL");
+
+:CALL
+11001101
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("CALL %04X",tmp2));
+
+:CALLC
+11|CCC|100
+tmp1=#READ_NEXT();
+tmp2=((#READ_NEXT())<<8)|tmp1;
+write(String.format("CALLC $CCC$, %04X",tmp2));
+
+:RET
+11001001
+write("RET");
+
+:RETC
+11|CCC|000
+write("RETC $CCC$");
+
+:RST
+11|AAA|111
+write(String.format("RST %01X     # PC = %02X", $AAA$ , opcodeByte1&0x38));
+
+:INR R
+00|DDD|100
+write("INR $DDD$");
+
+:DCR R
+00|DDD|101
+write("DCR $DDD$");
+
+:INR M
+00110100
+write("INR M");
+
+:DCR M
+00110101
+write("DCR M");
+
+:INX RP
+00|RP|0011
+write("INX $RP$");
+
+:DCX RP
+00|RP|1011
+write("DCX $RP$");
+
+:ADD R
+10000|SSS
+write("ADD $SSS$");
+
+:ADC R
+10001|SSS
+write("ADC $SSS$");
+
+:ADD M
+10000110
+write("ADD M");
+
+:ADC M
+10001110
+write("ADC M");
+
+:ADI
+11000110
+tmp2=#READ_NEXT();
+write(String.format("ADI %02X",tmp2));
+
+:ACI
+11001110
+tmp2=#READ_NEXT();
+write(String.format("ACI %02X",tmp2));
+
+:DAD RP
+00|RP|1001
+write("DAD $RP$");
+
+:SUB R
+10010|SSS
+write("SUB $SSS$");
+
+:SBB R
+10011|SSS
+write("SBB $SSS$");
+
+:SUB M
+10010110
+write("SUB M");
+
+:SBB R
+10011110
+write("SBB M");
+
+:SUI
+11010110
+tmp2=#READ_NEXT();
+write(String.format("SUI %02X",tmp2));
+
+:SBI
+11011110
+tmp2=#READ_NEXT();
+write(String.format("SBI %02X",tmp2));
+
+:ANA R
+10100|SSS
+write("ANA $SSS$");
+
+:XRA R
+10101|SSS
+write("XRA $SSS$");
+
+:ORA R
+10110|SSS
+write("ORA $SSS$");
+
+:CMP R
+10111|SSS
+write("CMP $SSS$");
+
+:ANA M
+10100110
+write("ANA M");
+
+:XRA M
+10101110
+write("ANA M");
+
+:ORA M
+10110110
+write("ORA M");
+
+:CMP M
+10111110
+write("CMP M");
+
+:ANI
+11100110
+tmp1=#READ_NEXT();
+write(String.format("ANI %02X",tmp1));
+
+:XRI
+11101110
+tmp1=#READ_NEXT();
+write(String.format("XRI %02X",tmp1));
+
+:ORI
+11110110
+tmp1=#READ_NEXT();
+write(String.format("ORI %02X",tmp1));
+
+:CPI
+11111110
+tmp1=#READ_NEXT();
+write(String.format("CPI %02X",tmp1));
+
+:RLC
+00000111
+write("RLC");
+
+:RRC
+00001111
+write("RRC");
+
+:RAL
+00010111
+write("RAL");
+
+:RAR
+00011111
+write("RAR");
+
+:CMA
+00101111
+write("CMA");
+
+:STC
+00110111
+write("STC");
+
+:CMC
+00111111
+write("CMC");
+
+:DAA
+00100111
+write("DAA");
+
+:IN
+11011011
+tmp1=#READ_NEXT();
+write(String.format("IN %02X",tmp1));
+
+:OUT
+11010011
+tmp1=#READ_NEXT();
+write(String.format("OUT %02X",tmp1));
+
+:EI
+11111011
+write("EI");
+
+:DI
+11110011
+write("DI");
+
+:NOP
+00000000
+write("NOP");
+
+:HLT
+01110110
+write("HLT");
+
+:.
+
+          } // end step()
+
